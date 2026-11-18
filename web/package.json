@@ -1,0 +1,19 @@
+{
+  "name": "sky-kit",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Endless drifting painterly clouds for the web (WebGL2), with a React wrapper.",
+  "type": "module",
+  "exports": {
+    ".": { "types": "./src/sky.d.ts", "default": "./src/sky.js" },
+    "./react": { "types": "./src/react.d.ts", "default": "./src/react.js" }
+  },
+  "files": ["src"],
+  "sideEffects": false,
+  "peerDependencies": { "react": ">=17" },
+  "peerDependenciesMeta": { "react": { "optional": true } },
+  "scripts": {
+    "serve": "python3 -m http.server 5173",
+    "check": "node --check src/sky.js && node --check src/react.js"
+  }
+}

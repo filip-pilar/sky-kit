@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>sky-kit React example</title>
+<!-- No build step: React comes from esm.sh (pinned), the wrapper is plain JS. -->
+<script type="importmap">
+{ "imports": {
+  "react": "https://esm.sh/react@18.3.1",
+  "react-dom/client": "https://esm.sh/react-dom@18.3.1/client?deps=react@18.3.1"
+} }
+</script>
+<style>body{margin:0;font:15px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="module">
+import { createElement as h, StrictMode, useRef, useState } from 'react';
+import { createRoot } from 'react-dom/client';
+import { Sky } from '../src/react.js';
+
+function App() {
+  const sky = useRef(null);
+  const [coverage, setCoverage] = useState(0.6);
+  return h('div', null,
+    h(Sky, { ref: sky, coverage, interactive: true, style: { height: '70vh' } },
+      h('div', { style: { padding: 32, color: '#fff', textShadow: '0 2px 12px rgba(20,60,130,.4)' } },
+        h('h1', { style: { margin: 0, fontSize: 44 } }, 'Sky in React'),
+        h('p', null, 'Content sits on top of the sky; the sky fills its box.'))),
+    h('div', { style: { padding: 16, display: 'flex', gap: 12, alignItems: 'center' } },
+      h('label', null, 'Clouds ', h('input', { type: 'range', min: 0, max: 1, step: 0.01, value: coverage, onChange: e => setCoverage(+e.target.value) })),
+      h('button', { onClick: () => sky.current.showShape({ text: 'hi!' }) }, 'Form "hi!"'),
+      h('button', { onClick: () => sky.current.flyPlane() }, 'Fly a plane')));
+}
+createRoot(document.getElementById('root')).render(h(StrictMode, null, h(App)));
+window.__ready = true;
+</script>
+</body>
+</html>
