@@ -11,5 +11,6 @@ let package = Package(
     targets: [
         .target(name: "SkyKit"),
         .executableTarget(name: "sky-render", dependencies: ["SkyKit"]),
+        .executableTarget(name: "SkyDemo", dependencies: ["SkyKit"]),   // macOS window demo: swift run SkyDemo
     ]
 )
