@@ -9,6 +9,7 @@ import SkyKit
 
 var opts = SkyOptions()
 var width = 1600, height = 1000, seconds = 0.0, scale = 2.0, out = "sky.png"
+var shapeText: String? = nil, plane = false
 var args = Array(CommandLine.arguments.dropFirst())
 func value() -> String {
     guard !args.isEmpty else { FileHandle.standardError.write("missing value\n".data(using: .utf8)!); exit(2) }
@@ -26,6 +27,8 @@ while !args.isEmpty {
     case "--shadow": opts.shadow = Double(value()) ?? opts.shadow
     case "--palette": opts.palette = SkyOptions.Palette(rawValue: value()) ?? .day
     case "--direction": opts.direction = value() == "right" ? .right : .left
+    case "--text": shapeText = value()                 // start forming this text at time 0
+    case "--plane": plane = true                        // a plane from (0, 0.7) to (1, 0.75) at time 0
     case let other:
         FileHandle.standardError.write("unknown option \(other)\n".data(using: .utf8)!); exit(2)
     }
@@ -34,7 +37,10 @@ while !args.isEmpty {
 do {
     let renderer = try SkyRenderer(options: opts)
     let start = Date()
-    let image = try renderer.renderImage(width: width, height: height, pixelsPerPoint: scale, seconds: seconds)
+    let image = try renderer.renderImage(width: width, height: height, pixelsPerPoint: scale, seconds: seconds) { r in
+        if let shapeText, !r.showShape(.text(shapeText)) { FileHandle.standardError.write("could not build the shape\n".data(using: .utf8)!) }
+        if plane { r.flyPlane(from: CGPoint(x: 0, y: 0.7), to: CGPoint(x: 1, y: 0.75)) }
+    }
     let url = URL(fileURLWithPath: out)
     guard let dest = CGImageDestinationCreateWithURL(url as CFURL, "public.png" as CFString, 1, nil) else { throw SkyRenderer.RendererError.readback }
     CGImageDestinationAddImage(dest, image, nil)

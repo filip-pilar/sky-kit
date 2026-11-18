@@ -57,30 +57,42 @@ static float3 skyAt(float v, constant SkyColors& c) {
     return mix(col, c.top.rgb, smoothstep(0.4, 1.0, v));
 }
 
-static float2 cumulus(float2 p, float scale, float2 seed, float cov, float morph) {
+// a = (win0.x, win0.y, unitsPerPixel, viewH)   b = (morph, scale, coverage, shadow)
+// c = (haze, farMask, seed.x, seed.y)           d = (target height in pixels, shape amount, 0, 0)
+// shapeRect = cloud-space (x0, y0, width, height) of the shape image
+struct CloudParams { float4 a; float4 b; float4 c; float4 d; float4 shapeRect; SkyColors sky; };
+
+// shapes: pull cloud into the silhouette (keeping the cloud's own billow texture) and thin the clouds around it.
+// The mask texture has top-down rows, so it is sampled at 1 - y.
+static float withShape(float v, float2 p, float bil, constant CloudParams& P, texture2d<float> shape) {
+    float amt = P.d.y;
+    if (amt <= 0.0) return v;
+    float2 su = (p - P.shapeRect.xy) / P.shapeRect.zw;
+    if (su.x < 0.0 || su.y < 0.0 || su.x > 1.0 || su.y > 1.0) return v;
+    constexpr sampler s(filter::linear, address::clamp_to_edge);
+    float2 m = shape.sample(s, float2(su.x, 1.0 - su.y)).rg * amt;
+    return mix(v, v * 0.5 - 0.15, m.y * (1.0 - m.x)) + m.x * (0.38 + 0.3 * bil);
+}
+static float2 cumulus(float2 p, float scale, float2 seed, float cov, float morph, constant CloudParams& P, texture2d<float> shape) {
     float2 q = p * float2(2.2, 3.4) / scale + seed;
     float2 w = float2(fbm(q * 0.5 + morph, 3), fbm(q * 0.5 + 5.2 - morph, 3));
     float base = fbm(q * 0.7 + w * 0.6, 4);
     float bil = billow(q * 2.0 + w, 3);
-    float v = base + 0.15 * (bil - 0.35);
+    float v = withShape(base + 0.15 * (bil - 0.35), p, bil, P, shape);
     float thr = mix(0.22, -0.12, cov);
     float D = smoothstep(thr, thr + 0.22, v);
     float dome = smoothstep(thr, thr + 0.7, v);
     return float2(D, (0.05 * dome + 0.012 * D * bil) * scale);
 }
-static float cumulusLite(float2 p, float scale, float2 seed, float cov, float morph) {
+static float cumulusLite(float2 p, float scale, float2 seed, float cov, float morph, constant CloudParams& P, texture2d<float> shape) {
     float2 q = p * float2(2.2, 3.4) / scale + seed;
     float2 w = float2(fbm(q * 0.5 + morph, 2), fbm(q * 0.5 + 5.2 - morph, 2));
-    float v = fbm(q * 0.7 + w * 0.6, 3);
+    float v = withShape(fbm(q * 0.7 + w * 0.6, 3), p, 0.35, P, shape);
     float thr = mix(0.22, -0.12, cov);
     return smoothstep(thr, thr + 0.22, v);
 }
 
-// a = (win0.x, win0.y, unitsPerPixel, viewH)   b = (morph, scale, coverage, shadow)
-// c = (haze, farMask, seed.x, seed.y)           d = (target height in pixels, 0, 0, 0)
-struct CloudParams { float4 a; float4 b; float4 c; float4 d; SkyColors sky; };
-
-fragment float4 sky_cloud(VOut in [[stage_in]], constant CloudParams& P [[buffer(0)]]) {
+fragment float4 sky_cloud(VOut in [[stage_in]], constant CloudParams& P [[buffer(0)]], texture2d<float> shape [[texture(0)]]) {
     const float3 LIT = float3(1.0, 0.98, 0.94), SHADE = float3(0.635, 0.722, 0.902), RIM = float3(1.0, 0.925, 0.8);
     const float3 L = float3(-0.50, 0.70, 0.52);
     float2 frag = float2(in.pos.x, P.d.x - in.pos.y);
@@ -91,7 +103,7 @@ fragment float4 sky_cloud(VOut in [[stage_in]], constant CloudParams& P [[buffer
     float scale = P.b.y;
     float2 seed = P.c.zw;
     float cov = P.b.z * mix(1.0, 0.75 + 0.35 * smoothstep(0.8, 0.1, vv), P.c.y);
-    float2 D0 = cumulus(p, scale, seed, cov, P.b.x);
+    float2 D0 = cumulus(p, scale, seed, cov, P.b.x, P, shape);
     float alpha = smoothstep(0.0, 0.61, D0.x);
     float2 grad = float2(dfdx(D0.y), -dfdy(D0.y)) / upp;
     if (alpha < 0.002) return float4(0.0);
@@ -103,7 +115,7 @@ fragment float4 sky_cloud(VOut in [[stage_in]], constant CloudParams& P [[buffer
     s = mix(s, (floor(f) + smoothstep(0.4, 0.6, fract(f))) / 2.0, 0.3);
     float3 c = mix(SHADE, LIT, s);
     float occ = 0.0;
-    for (int i = 1; i <= 4; i++) occ += cumulusLite(p + L2 * 0.028 * float(i) * scale, scale, seed, cov, P.b.x);
+    for (int i = 1; i <= 4; i++) occ += cumulusLite(p + L2 * 0.028 * float(i) * scale, scale, seed, cov, P.b.x, P, shape);
     c = mix(c, SHADE, smoothstep(0.35, 0.95, occ / 4.0) * P.b.w);
     c = mix(c, SHADE, smoothstep(0.45, 1.0, D0.x) * 0.2 * P.b.w * (1.0 - s));
     float edge = 1.0 - smoothstep(0.0, 0.3, D0.x);
@@ -116,8 +128,52 @@ fragment float4 sky_cloud(VOut in [[stage_in]], constant CloudParams& P [[buffer
 }
 
 // a = (width, height, unit, viewH)   far/near = (window start A, window start B, window width, fade)
-// scroll = (far, near, 0, 0)
+// scroll = (far, near, push far, push near)
 struct CompositeParams { float4 a; float4 far; float4 near; float4 scroll; SkyColors sky; };
+
+// gust[i] = view-relative (x, y, dx, dy) in cloud units; plane[i] = (start x, start y, dir x, dir y)
+// info = (gust count, plane A age, plane B age, plane speed)   info2 = (trail life, trail drift, 0, 0)
+struct ExtraParams { float4 gust[12]; float4 plane[2]; float4 info; float4 info2; };
+
+static float2 gustAt(float2 p, constant ExtraParams& E) {
+    float2 d = float2(0.0);
+    int n = int(E.info.x);
+    for (int i = 0; i < 12; i++) {
+        if (i >= n) break;
+        float2 r = p - E.gust[i].xy;
+        d += E.gust[i].zw * exp(-dot(r, r) / 0.02);
+    }
+    return d;
+}
+static float vnoise(float x) {
+    float i = floor(x), f = fract(x);
+    return mix(hash12(float2(i, 7.1)), hash12(float2(i + 1.0, 7.1)), f * f * (3.0 - 2.0 * f));
+}
+static float contrails(float2 p, constant ExtraParams& E, thread float& planeDot) {
+    float tr = 0.0; planeDot = 0.0;
+    float speed = E.info.w, life = E.info2.x, drift = E.info2.y;
+    for (int i = 0; i < 2; i++) {
+        float age = i == 0 ? E.info.y : E.info.z;
+        if (age < 0.0) continue;
+        float2 S = E.plane[i].xy, D = E.plane[i].zw;
+        float head = age * speed;
+        float2 rel = p - S;
+        float2 hp = rel - D * head;
+        planeDot = max(planeDot, exp(-dot(hp, hp) / (0.0035 * 0.0035)));
+        float ta0 = (head - dot(rel, D)) / speed;
+        float2 relw = rel - float2(drift * max(ta0, 0.0), 0.0);
+        float along = dot(relw, D);
+        float ta = (head - along) / speed;
+        if (along < 0.0 || ta <= 0.0) continue;
+        float across = dot(relw, float2(-D.y, D.x)) + (vnoise(along * 18.0 + float(i) * 13.0) - 0.5) * 0.008 * min(ta * 0.1, 1.0);
+        float wdt = 0.0022 + ta * 0.0016;
+        float sep = 0.0028 * exp(-ta * 0.35);
+        float u1 = (across - sep) / wdt, u2 = (across + sep) / wdt;
+        float fade = exp(-ta / life) * smoothstep(0.0, 0.8, ta) / (1.0 + ta * 0.06);
+        tr = max(tr, 0.5 * (exp(-u1 * u1) + exp(-u2 * u2)) * fade);
+    }
+    return tr;
+}
 
 static float4 layerAt(texture2d<float> A, texture2d<float> B, float4 w, float scroll, float2 p, float viewH) {
     constexpr sampler s(filter::linear, address::clamp_to_edge);
@@ -128,7 +184,7 @@ static float4 layerAt(texture2d<float> A, texture2d<float> B, float4 w, float sc
     return mix(a, b, w.w);
 }
 
-fragment float4 sky_composite(VOut in [[stage_in]], constant CompositeParams& P [[buffer(0)]],
+fragment float4 sky_composite(VOut in [[stage_in]], constant CompositeParams& P [[buffer(0)]], constant ExtraParams& E [[buffer(1)]],
                               texture2d<float> farA [[texture(0)]], texture2d<float> farB [[texture(1)]],
                               texture2d<float> nearA [[texture(2)]], texture2d<float> nearB [[texture(3)]]) {
     float2 frag = float2(in.pos.x, P.a.y - in.pos.y);
@@ -137,9 +193,16 @@ fragment float4 sky_composite(VOut in [[stage_in]], constant CompositeParams& P 
     float3 col = skyAt(frag.y / P.a.y, P.sky);
     float sd = length(ph - float2(0.10 * P.a.x / P.a.y, 1.05));
     col += float3(1.0, 0.97, 0.88) * (0.20 * exp(-sd * 2.2) + 0.22 * exp(-sd * 9.0));
-    float4 far = layerAt(farA, farB, P.far, P.scroll.x, p, P.a.w);
+    float2 g = E.info.x > 0.0 ? gustAt(p, E) : float2(0.0);
+    float4 far = layerAt(farA, farB, P.far, P.scroll.x, p - g * P.scroll.z, P.a.w);
     col = col * (1.0 - far.a) + far.rgb;
-    float4 near = layerAt(nearA, nearB, P.near, P.scroll.y, p, P.a.w);
+    if (E.info.y >= 0.0 || E.info.z >= 0.0) {
+        float pd;
+        float tr = contrails(p, E, pd);
+        col = mix(col, float3(1.0), clamp(tr, 0.0, 1.0) * 0.85);
+        col = mix(col, float3(0.95, 0.97, 1.0), pd * 0.9);
+    }
+    float4 near = layerAt(nearA, nearB, P.near, P.scroll.y, p - g * P.scroll.w, P.a.w);
     col = col * (1.0 - near.a) + near.rgb;
     col += (hash12(frag) - 0.5) / 255.0;
     return float4(col, 1.0);

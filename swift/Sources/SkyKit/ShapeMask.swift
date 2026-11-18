@@ -45,7 +45,10 @@ struct ShapeMask {
         switch source {
         case .text(let string):
             let font = roundedBoldFont(size: CGFloat(px))
-            let attr = NSAttributedString(string: string, attributes: [NSAttributedString.Key(kCTFontAttributeName as String): font])
+            let attr = NSAttributedString(string: string, attributes: [
+                NSAttributedString.Key(kCTFontAttributeName as String): font,
+                NSAttributedString.Key(kCTForegroundColorFromContextAttributeName as String): true,   // draw in the context's white
+            ])
             let line = CTLineCreateWithAttributedString(attr)
             var ascent: CGFloat = 0, descent: CGFloat = 0, leading: CGFloat = 0
             let lineW = CTLineGetTypographicBounds(line, &ascent, &descent, &leading)

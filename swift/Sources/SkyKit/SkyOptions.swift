@@ -23,15 +23,23 @@ public struct SkyOptions: Equatable, Sendable {
     /// Resolution of the cloud snapshots.
     public var quality: Quality = .high
     public var fps: Int = 60
+    /// Pointer / touch movement gently pushes the clouds, which then settle back.
+    public var interactive = false
+    /// Occasional planes with contrails.
+    public var planes = false
+    /// Seconds a contrail lingers.
+    public var trailLife: Double = 40
     /// Hold still when the system asks for reduced motion.
     public var respectReducedMotion = true
 
     public init(speed: Double = 1, coverage: Double = 0.6, shadow: Double = 0.3, cloudScale: Double = 1,
                 direction: Direction = .left, seed: Double = 0, palette: Palette = .day, colors: SkyColors? = nil,
-                quality: Quality = .high, fps: Int = 60, respectReducedMotion: Bool = true) {
+                quality: Quality = .high, fps: Int = 60, interactive: Bool = false, planes: Bool = false,
+                trailLife: Double = 40, respectReducedMotion: Bool = true) {
         self.speed = speed; self.coverage = coverage; self.shadow = shadow; self.cloudScale = cloudScale
         self.direction = direction; self.seed = seed; self.palette = palette; self.colors = colors
-        self.quality = quality; self.fps = fps; self.respectReducedMotion = respectReducedMotion
+        self.quality = quality; self.fps = fps; self.interactive = interactive; self.planes = planes
+        self.trailLife = trailLife; self.respectReducedMotion = respectReducedMotion
     }
 
     var resolvedColors: SkyColors { colors ?? SkyColors.palette(palette) }
