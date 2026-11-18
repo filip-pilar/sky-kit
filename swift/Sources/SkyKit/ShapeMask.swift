@@ -16,7 +16,7 @@ public enum SkyShapeSource {
 }
 
 /// Silhouette turned into the two blurred channels the cloud shader uses (port of buildShapeImage in sky.js):
-/// R = the shape (tight blur), G = a wide halo where other clouds are thinned out.
+/// R = the shape (soft blur), G = a wide halo where other clouds are thinned out, B = the shape's body (very wide blur).
 /// Rows are stored top-down (Metal texture order).
 struct ShapeMask {
     let width: Int
@@ -31,12 +31,17 @@ struct ShapeMask {
         let w = sw + pad * 2, h = sh + pad * 2
         var alpha = [Float](repeating: 0, count: w * h)
         for y in 0..<sh { for x in 0..<sw { alpha[(y + pad) * w + x + pad] = sil[y * sw + x] } }
-        let near = blur(alpha, w, h, radius: 16), wide = blur(alpha, w, h, radius: 44)   // soft silhouette: the puffs shape the edge
+        let body = blur(alpha, w, h, radius: 70)                                       // the shape's domed body
+        // thick, solid shapes (a heart, an emoji) get soft cloud edges like the clouds around them;
+        // thin strokes (text) stay crisp enough to read
+        let thick = Double(min(1, max(0, ((body.max() ?? 0) / 255 - 0.6) / 0.3)))
+        let near = blur(alpha, w, h, radius: 16 + 8 * thick), wide = blur(alpha, w, h, radius: 44)
         var rgba = [UInt8](repeating: 0, count: w * h * 4)
         for i in 0..<(w * h) {
             rgba[i * 4] = UInt8(min(255, near[i]))
             rgba[i * 4 + 1] = UInt8(min(255, wide[i] * 1.4))
-            rgba[i * 4 + 3] = 255
+            rgba[i * 4 + 2] = UInt8(min(255, body[i]))
+            rgba[i * 4 + 3] = UInt8((thick * 255).rounded())   // the shader adapts the cloud to it
         }
         return ShapeMask(width: w, height: h, rgba: rgba, silhouetteHeight: sh, silhouetteWidth: sw)
     }

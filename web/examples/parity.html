@@ -20,15 +20,19 @@ if (devicePixelRatio !== 2) out.textContent = `note: devicePixelRatio is ${devic
 
 const sky = createSky(document.getElementById('box'));
 sky.pause();                                   // only _step advances time
-await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-// same extras as `sky-render --text … --plane`
+// two frames (or a timer, if the page is in the background and frames are held back)
+await new Promise(r => { requestAnimationFrame(() => requestAnimationFrame(r)); setTimeout(r, 500); });
+// same extras as `sky-render --text … --heart --plane`
+const HEART = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="100" height="92" viewBox="0 0 100 92"><path d="M50 90C20 66 2 48 2 28 2 13 14 2 28 2c10 0 18 6 22 14C54 8 62 2 72 2c14 0 26 11 26 26 0 20-18 38-48 62z" fill="#000"/></svg>');
 if (q.get('text')) await sky.showShape({ text: q.get('text') });
+if (q.get('heart')) await sky.showShape({ image: HEART, size: 0.36 });
 if (q.get('plane')) sky.flyPlane({ from: [0, 0.7], to: [1, 0.75] });
 sky._step(seconds);
 const webUrl = sky.snapshot();
 
 const pixels = async url => {
-  const img = new Image(); img.src = url; await img.decode();
+  const img = new Image();
+  await new Promise((ok, fail) => { img.onload = ok; img.onerror = fail; img.src = url; });   // (decode() can stall in a background tab)
   const c = document.createElement('canvas'); c.width = img.width; c.height = img.height;
   const x = c.getContext('2d', { colorSpace: 'srgb' }); x.drawImage(img, 0, 0);
   return { w: img.width, h: img.height, d: x.getImageData(0, 0, img.width, img.height).data };

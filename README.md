@@ -114,7 +114,7 @@ cd swift && swift run sky-render --width 1600 --height 1000 --seconds 30 --out o
 
 then open `web/examples/parity.html` in a browser at device pixel ratio 2. It renders the same frame in WebGL and compares every pixel. Current result: mean difference 0.131/255, max 9/255, no pixels more than 8 apart.
 
-With extras: `sky-render --seconds 10 --text hello --plane --out out/swift-extras.png` and `parity.html?text=hello&plane=1&seconds=10&png=../../swift/out/swift-extras.png`. Sky, plane and contrail match; the only differences are in and around the letters, because the browser and CoreText draw the rounded font slightly differently.
+Shapes: `sky-render --seconds 4.5 --heart --out out/swift-heart-4.5.png` and `parity.html?heart=1&seconds=4.5&png=../../swift/out/swift-heart-4.5.png` match too (mean 0.139/255, max 14/255). With extras: `sky-render --seconds 10 --text hello --plane --out out/swift-extras.png` and `parity.html?text=hello&plane=1&seconds=10&png=../../swift/out/swift-extras.png`. Sky, plane and contrail match; the only differences are in and around the letters, because the browser and CoreText draw the rounded font slightly differently.
 
 ## Known limits
 

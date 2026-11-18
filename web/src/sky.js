@@ -79,7 +79,8 @@ uniform float uUpp;           // cloud units per snapshot pixel
 uniform float uViewH;         // view height in cloud units
 uniform float uMorph, uScale, uCov, uShadow, uHaze, uFarMask;
 uniform vec2 uSeed;
-uniform sampler2D uShape;     // R = the shape (softened), G = wide area around it
+uniform sampler2D uShape;     // R = the shape (softened), G = wide area around it, B = very wide blur (the shape's body),
+                              // A = how thick the shape is overall (0 = thin strokes like text, 1 = a solid shape like a heart)
 uniform vec4 uShapeRect;      // cloud-space x0, y0, width, height of the shape image
 uniform float uShapeAmt;      // 0 = no shape .. 1 = fully formed (only the live patch over the shape uses it)
 out vec4 outColor;
@@ -112,10 +113,10 @@ float billow(vec2 p, int oct){
 // frame, and the shape only changes the density before it is turned into cloud and shaded. Nearby
 // cloud is nudged toward the shape and loses mass, the shape condenses first where cloud already
 // touches it and then fills in from its densest puffs. Melting is the same, run backwards.
-vec2 shapeAt(vec2 p){
+vec4 shapeAt(vec2 p){
   vec2 su = (p - uShapeRect.xy) / uShapeRect.zw;
-  if (su.x < 0.0 || su.y < 0.0 || su.x > 1.0 || su.y > 1.0) return vec2(0.0);
-  return texture(uShape, su).rg;
+  if (su.x < 0.0 || su.y < 0.0 || su.x > 1.0 || su.y > 1.0) return vec4(0.0);
+  return texture(uShape, su);
 }
 float smax(float a, float b, float k){ float h = clamp(0.5 + 0.5 * (a - b) / k, 0.0, 1.0); return mix(b, a, h) + k * h * (1.0 - h); }
 // where to read the surrounding cloud from: a little further out, so it drifts in as the shape forms
@@ -135,7 +136,7 @@ vec2 gatherFrom(vec2 p){
 // letters condense inside it from their densest puffs outward, and the leftover bank thins away.
 float withShape(float v, vec2 p, float thr, float bil){
   if (uShapeAmt <= 0.0) return v;
-  vec2 m = shapeAt(p);
+  vec4 m = shapeAt(p);
   if (m.y <= 0.0) return v;
   float a = uShapeAmt;
   float touch = smoothstep(thr - 0.2, thr + 0.1, v);                // 1 inside or right next to existing cloud
@@ -144,15 +145,20 @@ float withShape(float v, vec2 p, float thr, float bil){
   float lump = fbm(p * 4.5 + vec2(11.3, 4.1), 3);
   float bankV = thr + (m.y - 0.6) * 0.5 + lump * 0.5 + touch * 0.15 - (1.0 - bank) * 0.45;
   float amb = smax(v - m.y * 0.5 * a * a, bankV, 0.08);              // the surrounding cloud gives up its mass
-  // the shape's own cloud: bumpy cumulus lumps about a letter-stroke wide
+  // the shape's own cloud: bumps about a letter-stroke wide; solid shapes also get a domed body
+  // (densest in the middle, so it shades round) and cauliflower lumps that shape the outline
+  float t = m.w;
+  float lumps = fbm(p * 5.5 + vec2(5.1, 7.3), 3);
   float big = fbm(p * 9.0 + vec2(3.7, 1.9), 3);
   float small = fbm(p * 26.0 + vec2(8.1, 2.3), 2);
-  float fill = thr + (m.x - 0.5) * 0.6 + big * 0.3 + small * 0.15 + (bil - 0.35) * 0.2;
+  float fill = thr + (m.x - 0.5) * mix(0.6, 0.45, t) + ((m.z - 0.5) * 0.3 + lumps * 0.3 + 0.05) * t
+             + big * mix(0.3, 0.15, t) + small * mix(0.15, 0.05, t) + (bil - 0.35) * 0.2;
   // when each bit condenses: puff by puff (whole lumps, not the stroke's centre line), edges last,
   // sooner where cloud is already there
   float when = clamp(0.62 - big * 1.5 - (m.x - 0.55) * 0.35 - touch * 0.15, 0.42, 1.0);   // after the bank has gathered
-  fill -= max(0.0, when - a) * 2.0;
-  fill = mix(-1.0, fill, smoothstep(0.02, 0.2, m.x));
+  float g = when - a;
+  fill -= 0.7 * (g + sqrt(g * g + 0.004));                          // ~1.4·max(0, g) without a crease (creases light badly)
+  fill = mix(-1.0, fill, smoothstep(0.0, 0.1, m.x));
   return smax(amb, fill, 0.06);
 }
 
@@ -163,9 +169,12 @@ vec2 cumulus(vec2 p, vec2 pg, float scale, vec2 seed, float cov, float morph){
   float bil = billow(q * 2.0 + w, 3);
   float thr = mix(0.22, -0.12, cov);
   float v = withShape(base + 0.15 * (bil - 0.35), p, thr, bil);
-  float D = smoothstep(thr, thr + 0.22, v);
+  vec4 m = uShapeAmt > 0.0 ? shapeAt(p) : vec4(0.0);
+  // a shape's rim fades out slowly like other clouds' edges (more for solid shapes); the outline stays put
+  float rim = smoothstep(0.0, 0.3, m.y) * mix(0.35, 1.0, m.w) * smoothstep(0.0, 0.5, uShapeAmt);
+  float D = smoothstep(thr, thr + 0.22 + 0.35 * rim, v);
   float dome = smoothstep(thr, thr + 0.7, v);
-  float inShape = uShapeAmt > 0.0 ? shapeAt(p).x * smoothstep(0.0, 0.5, uShapeAmt) : 0.0;   // softer fine texture inside a shape
+  float inShape = m.x * smoothstep(0.0, 0.5, uShapeAmt);             // softer fine texture inside a shape
   return vec2(D, (0.05 * dome + 0.012 * D * bil * (1.0 - 0.5 * inShape)) * scale);
 }
 float cumulusLite(vec2 p, vec2 pg, float scale, vec2 seed, float cov, float morph){
@@ -538,14 +547,20 @@ export function createSky(container, options = {}) {
     const cx = c.getContext('2d'); cx.drawImage(sil, pad, pad);
     const px = cx.getImageData(0, 0, w, h).data, alpha = new Float32Array(w * h);
     for (let i = 0; i < w * h; i++) alpha[i] = px[i * 4 + 3];
-    const near = blurAlpha(alpha, w, h, 16), wide = blurAlpha(alpha, w, h, 44);   // soft silhouette: the puffs shape the edge
+    const body = blurAlpha(alpha, w, h, 70);                                       // the shape's domed body
+    // thick, solid shapes (a heart, an emoji) get soft cloud edges like the clouds around them;
+    // thin strokes (text) stay crisp enough to read
+    let bodyMax = 0; for (let i = 0; i < w * h; i++) bodyMax = Math.max(bodyMax, body[i]);
+    const thick = Math.min(1, Math.max(0, (bodyMax / 255 - 0.6) / 0.3));
+    const near = blurAlpha(alpha, w, h, 16 + 8 * thick), wide = blurAlpha(alpha, w, h, 44);
     const data = new Uint8Array(w * h * 4);
     for (let y = 0; y < h; y++) {                 // write rows bottom-up (GL texture order)
       for (let x = 0; x < w; x++) {
         const s = (h - 1 - y) * w + x, d = (y * w + x) * 4;
         data[d] = Math.min(255, near[s]);
         data[d + 1] = Math.min(255, wide[s] * 1.4);
-        data[d + 3] = 255;
+        data[d + 2] = Math.min(255, body[s]);
+        data[d + 3] = Math.round(thick * 255);   // the shader adapts the cloud to it
       }
     }
     return { width: w, height: h, data, silH: sil.height, silW: sil.width };

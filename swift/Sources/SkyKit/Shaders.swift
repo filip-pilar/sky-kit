@@ -73,10 +73,13 @@ static float2 maskAt(float2 su, texture2d<float> shape) {
     constexpr sampler s(filter::linear, address::clamp_to_edge);
     return shape.sample(s, float2(su.x, 1.0 - su.y)).rg;
 }
-static float2 shapeAt(float2 p, constant CloudParams& P, texture2d<float> shape) {
+// R = the shape (softened), G = wide area around it, B = very wide blur (the shape's body),
+// A = how thick the shape is overall (0 = thin strokes like text, 1 = a solid shape like a heart)
+static float4 shapeAt(float2 p, constant CloudParams& P, texture2d<float> shape) {
     float2 su = (p - P.shapeRect.xy) / P.shapeRect.zw;
-    if (su.x < 0.0 || su.y < 0.0 || su.x > 1.0 || su.y > 1.0) return float2(0.0);
-    return maskAt(su, shape);
+    if (su.x < 0.0 || su.y < 0.0 || su.x > 1.0 || su.y > 1.0) return float4(0.0);
+    constexpr sampler s(filter::linear, address::clamp_to_edge);
+    return shape.sample(s, float2(su.x, 1.0 - su.y));
 }
 static float smax(float a, float b, float k) { float h = clamp(0.5 + 0.5 * (a - b) / k, 0.0, 1.0); return mix(b, a, h) + k * h * (1.0 - h); }
 // where to read the surrounding cloud from: a little further out, so it drifts in as the shape forms
@@ -95,7 +98,7 @@ static float2 gatherFrom(float2 p, constant CloudParams& P, texture2d<float> sha
 static float withShape(float v, float2 p, float thr, float bil, constant CloudParams& P, texture2d<float> shape) {
     float a = P.d.y;
     if (a <= 0.0) return v;
-    float2 m = shapeAt(p, P, shape);
+    float4 m = shapeAt(p, P, shape);
     if (m.y <= 0.0) return v;
     float touch = smoothstep(thr - 0.2, thr + 0.1, v);               // 1 inside or right next to existing cloud
     // a lumpy cumulus bank over the shape's footprint, growing out from cloud already nearby
@@ -103,14 +106,19 @@ static float withShape(float v, float2 p, float thr, float bil, constant CloudPa
     float lump = fbm(p * 4.5 + float2(11.3, 4.1), 3);
     float bankV = thr + (m.y - 0.6) * 0.5 + lump * 0.5 + touch * 0.15 - (1.0 - bank) * 0.45;
     float amb = smax(v - m.y * 0.5 * a * a, bankV, 0.08);             // the surrounding cloud gives up its mass
-    // the shape's own cloud: bumpy cumulus lumps about a letter-stroke wide
+    // the shape's own cloud: bumps about a letter-stroke wide; solid shapes also get a domed body
+    // (densest in the middle, so it shades round) and cauliflower lumps that shape the outline
+    float t = m.w;
+    float lumps = fbm(p * 5.5 + float2(5.1, 7.3), 3);
     float big = fbm(p * 9.0 + float2(3.7, 1.9), 3);
     float small = fbm(p * 26.0 + float2(8.1, 2.3), 2);
-    float fill = thr + (m.x - 0.5) * 0.6 + big * 0.3 + small * 0.15 + (bil - 0.35) * 0.2;
+    float fill = thr + (m.x - 0.5) * mix(0.6, 0.45, t) + ((m.z - 0.5) * 0.3 + lumps * 0.3 + 0.05) * t
+               + big * mix(0.3, 0.15, t) + small * mix(0.15, 0.05, t) + (bil - 0.35) * 0.2;
     // when each bit condenses: puff by puff, edges last, sooner where cloud is already there
     float when = clamp(0.62 - big * 1.5 - (m.x - 0.55) * 0.35 - touch * 0.15, 0.42, 1.0);   // after the bank has gathered
-    fill -= max(0.0, when - a) * 2.0;
-    fill = mix(-1.0, fill, smoothstep(0.02, 0.2, m.x));
+    float g = when - a;
+    fill -= 0.7 * (g + sqrt(g * g + 0.004));                           // ~1.4·max(0, g) without a crease (creases light badly)
+    fill = mix(-1.0, fill, smoothstep(0.0, 0.1, m.x));
     return smax(amb, fill, 0.06);
 }
 
@@ -121,9 +129,12 @@ static float2 cumulus(float2 p, float2 pg, float scale, float2 seed, float cov, 
     float bil = billow(q * 2.0 + w, 3);
     float thr = mix(0.22, -0.12, cov);
     float v = withShape(base + 0.15 * (bil - 0.35), p, thr, bil, P, shape);
-    float D = smoothstep(thr, thr + 0.22, v);
+    float4 m = P.d.y > 0.0 ? shapeAt(p, P, shape) : float4(0.0);
+    // a shape's rim fades out slowly like other clouds' edges (more for solid shapes); the outline stays put
+    float rim = smoothstep(0.0, 0.3, m.y) * mix(0.35, 1.0, m.w) * smoothstep(0.0, 0.5, P.d.y);
+    float D = smoothstep(thr, thr + 0.22 + 0.35 * rim, v);
     float dome = smoothstep(thr, thr + 0.7, v);
-    float inShape = P.d.y > 0.0 ? shapeAt(p, P, shape).x * smoothstep(0.0, 0.5, P.d.y) : 0.0;   // softer fine texture inside a shape
+    float inShape = m.x * smoothstep(0.0, 0.5, P.d.y);                // softer fine texture inside a shape
     return float2(D, (0.05 * dome + 0.012 * D * bil * (1.0 - 0.5 * inShape)) * scale);
 }
 static float cumulusLite(float2 p, float2 pg, float scale, float2 seed, float cov, float morph, constant CloudParams& P, texture2d<float> shape) {
