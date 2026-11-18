@@ -7,7 +7,7 @@ Endless drifting painterly clouds on a bright blue sky — for the web (WebGL2, 
 - Fills whatever container you put it in, at full device resolution.
 - Cheap: about 2 ms per frame at 2880×1800 on an M4 (clouds are painted into snapshots that slide, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)).
 - Pauses when off-screen or when the tab is hidden; holds still for reduced-motion users.
-- Extras (web and Swift): the pointer or a finger gently pushes clouds; planes with contrails; text, emoji or SVG/PNG shapes that form out of the clouds and melt back.
+- Extras (web and Swift): planes with contrails; text, emoji or SVG/PNG shapes that nearby clouds drift in to form, puff by puff, before they melt back into ordinary clouds.
 
 ## Web
 
@@ -16,9 +16,9 @@ No build step and no dependencies: `web/src/sky.js` is a plain ES module.
 ```js
 import { createSky } from './web/src/sky.js';   // or 'sky-kit' once installed
 
-const sky = createSky(document.querySelector('#hero'), { coverage: 0.6, interactive: true });
+const sky = createSky(document.querySelector('#hero'), { coverage: 0.6 });
 sky.set({ palette: 'pastel', speed: 2 });   // change anything live
-sky.showShape({ text: 'hello' });           // clouds gather into "hello", hold, then melt back
+sky.showShape({ text: 'hello' });           // nearby clouds gather into "hello", hold, then melt back
 sky.flyPlane();
 sky.destroy();
 ```
@@ -33,7 +33,7 @@ import { Sky } from 'sky-kit/react';
 function Hero() {
   const sky = useRef(null);
   return (
-    <Sky ref={sky} coverage={0.6} interactive style={{ height: 480 }}>
+    <Sky ref={sky} coverage={0.6} style={{ height: 480 }}>
       <h1>Overlay content</h1>
       <button onClick={() => sky.current.showShape({ text: 'hi' })}>Say hi</button>
     </Sky>
@@ -53,12 +53,11 @@ Props are the options below; changing a prop updates the sky live, and removing 
 | `cloudScale` | `1` | cloud size multiplier |
 | `direction` | `'left'` | `'left'` or `'right'` |
 | `seed` | `0` | any number gives a different sky |
-| `palette` | `'day'` | `'day'`, `'summer'`, `'pastel'` |
+| `palette` | `'summer'` | `'summer'`, `'day'`, `'pastel'` |
 | `skyTop`, `skyMid`, `skyLow` | `null` | custom hex colours, override the palette |
 | `gradient` | `0` | 0 = even blue sky, 1 = deep blue fading to a pale horizon |
 | `quality` | `'high'` | `'high'`, `'balanced'`, `'low'` (snapshot resolution) |
 | `fps` | `60` | frame cap |
-| `interactive` | `false` | pointer movement pushes clouds, which settle back |
 | `planes` | `false` | occasional planes with contrails |
 | `trailLife` | `40` | seconds a contrail lingers |
 | `respectReducedMotion` | `true` | hold still when the user prefers reduced motion |
@@ -84,7 +83,7 @@ Swift Package in `swift/`. Add it as a local package (or by URL once hosted), th
 import SkyKit
 
 struct ContentView: View {
-    @State private var options = SkyOptions(coverage: 0.6, interactive: true)
+    @State private var options = SkyOptions(coverage: 0.6)
     @StateObject private var sky = SkyController()
 
     var body: some View {
@@ -97,7 +96,7 @@ struct ContentView: View {
 }
 ```
 
-`SkyOptions` has the same names and defaults as the web options (`speed`, `coverage`, `shadow`, `cloudScale`, `direction`, `seed`, `palette`, `colors`, `gradient`, `quality`, `fps`, `interactive`, `planes`, `trailLife`, `respectReducedMotion`). Changing the value updates the sky live. `SkyController` sends planes (`flyPlane()`), forms shapes (`showShape(.text("hi"))` or `.image(cgImage)`) and renders stills (`snapshot(width:height:)`). With `interactive`, mouse hover (macOS, iPad pointer) or a finger drag pushes the clouds. The view stops drawing when nothing moves (speed 0 or Reduce Motion) and wakes up when something changes.
+`SkyOptions` has the same names and defaults as the web options (`speed`, `coverage`, `shadow`, `cloudScale`, `direction`, `seed`, `palette`, `colors`, `gradient`, `quality`, `fps`, `planes`, `trailLife`, `respectReducedMotion`). Changing the value updates the sky live. `SkyController` sends planes (`flyPlane()`), forms shapes (`showShape(.text("hi"))` or `.image(cgImage)`) and renders stills (`snapshot(width:height:)`). The view stops drawing when nothing moves (speed 0 or Reduce Motion) and wakes up when something changes.
 
 Also included:
 

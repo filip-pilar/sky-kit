@@ -17,7 +17,7 @@ struct SkyDemoApp: App {
 }
 
 struct DemoView: View {
-    @State private var options = SkyOptions(interactive: true, planes: true)
+    @State private var options = SkyOptions(planes: true)
     @State private var text = "hello"
     @StateObject private var sky = SkyController()
 
@@ -35,7 +35,6 @@ struct DemoView: View {
                     ForEach(SkyOptions.Palette.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) }
                 }.pickerStyle(.segmented).frame(width: 300)
                 HStack {
-                    Toggle("Pointer pushes clouds", isOn: $options.interactive)
                     Toggle("Planes", isOn: $options.planes)
                     Button("Fly a plane") { sky.flyPlane() }
                 }

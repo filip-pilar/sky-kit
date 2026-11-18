@@ -1,4 +1,4 @@
-export type Palette = 'day' | 'summer' | 'pastel';
+export type Palette = 'summer' | 'day' | 'pastel';
 export type Quality = 'high' | 'balanced' | 'low';
 
 export interface SkyOptions {
@@ -14,7 +14,7 @@ export interface SkyOptions {
   direction?: 'left' | 'right';
   /** Any number gives a different sky. Default 0. */
   seed?: number;
-  /** Sky colours. Default 'day'. */
+  /** Sky colours. Default 'summer'. */
   palette?: Palette;
   /** Custom sky colours (hex, e.g. '#2a7be4'); override the palette when set. */
   skyTop?: string | null;
@@ -26,8 +26,6 @@ export interface SkyOptions {
   quality?: Quality;
   /** Frame cap. Default 60. */
   fps?: number;
-  /** Pointer movement gently pushes the clouds, which then settle back. Default false. */
-  interactive?: boolean;
   /** Occasional planes with contrails. Default false. */
   planes?: boolean;
   /** Seconds a contrail lingers. Default 40. */
@@ -46,7 +44,7 @@ export interface ShapeOptions {
   y?: number;
   /** Height of the shape as a fraction of the view height. Default 0.32. */
   size?: number;
-  /** Seconds to condense, hold, and melt back into ordinary clouds. Default 4, 6, 8. */
+  /** Seconds to gather, hold, and melt back into ordinary clouds. Default 5, 5, 7. */
   form?: number;
   hold?: number;
   fade?: number;
@@ -65,7 +63,7 @@ export interface Sky {
   pause(): void;
   play(): void;
   flyPlane(options?: PlaneOptions): void;
-  /** Needs speed > 0: shapes form as the sky moves on. */
+  /** Nearby clouds drift in and gather into the shape, then it melts back. Needs speed > 0. */
   showShape(options: ShapeOptions): Promise<void>;
   clearShape(): void;
   /** PNG data URL of the current frame, or null before the first frame. */

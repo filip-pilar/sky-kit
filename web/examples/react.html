@@ -24,7 +24,7 @@ function App() {
   const sky = useRef(null);
   const [coverage, setCoverage] = useState(0.6);
   return h('div', null,
-    h(Sky, { ref: sky, coverage, interactive: true, style: { height: '70vh' } },
+    h(Sky, { ref: sky, coverage, style: { height: '70vh' } },
       h('div', { style: { padding: 32, color: '#fff', textShadow: '0 2px 12px rgba(20,60,130,.4)' } },
         h('h1', { style: { margin: 0, fontSize: 44 } }, 'Sky in React'),
         h('p', null, 'Content sits on top of the sky; the sky fills its box.'))),

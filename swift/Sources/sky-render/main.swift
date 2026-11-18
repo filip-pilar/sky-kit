@@ -25,7 +25,7 @@ while !args.isEmpty {
     case "--seed": opts.seed = Double(value()) ?? 0
     case "--coverage": opts.coverage = Double(value()) ?? opts.coverage
     case "--shadow": opts.shadow = Double(value()) ?? opts.shadow
-    case "--palette": opts.palette = SkyOptions.Palette(rawValue: value()) ?? .day
+    case "--palette": opts.palette = SkyOptions.Palette(rawValue: value()) ?? .summer
     case "--gradient": opts.gradient = Double(value()) ?? 0
     case "--direction": opts.direction = value() == "right" ? .right : .left
     case "--text": shapeText = value()                 // start forming this text at time 0

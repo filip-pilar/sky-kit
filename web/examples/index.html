@@ -27,7 +27,7 @@
   <p>The big sky is controlled by the panel. Below: the same component in other containers, each with its own settings.</p>
   <div class="row">
     <div><div id="card1" class="card"></div><div class="label">Card · sparse, slow</div></div>
-    <div><div id="card2" class="card"></div><div class="label">Card · busy, drifting right, summer</div></div>
+    <div><div id="card2" class="card"></div><div class="label">Card · busy, drifting right, day palette</div></div>
     <div><div id="phone" class="phone"></div><div class="label">Phone shape · pastel</div></div>
   </div>
   <div id="banner" class="banner"></div><div class="label">Banner, full width × 96px</div>
@@ -39,7 +39,7 @@
   <div class="r"><label>Clouds</label><output id="o-coverage"></output><input id="coverage" type="range" min="0" max="1" step="0.01"></div>
   <div class="r"><label>Shadow</label><output id="o-shadow"></output><input id="shadow" type="range" min="0" max="1" step="0.01"></div>
   <div class="r"><label>Cloud size</label><output id="o-cloudScale"></output><input id="cloudScale" type="range" min="0.5" max="2" step="0.05"></div>
-  <div class="r"><label>Palette</label><span></span><select id="palette"><option>day</option><option>summer</option><option>pastel</option></select></div>
+  <div class="r"><label>Palette</label><span></span><select id="palette"><option>summer</option><option>day</option><option>pastel</option></select></div>
   <div class="r"><label>Direction</label><span></span><select id="direction"><option>left</option><option>right</option></select></div>
   <div class="r"><label>Quality</label><span></span><select id="quality"><option>high</option><option>balanced</option><option>low</option></select></div>
   <button id="seedBtn">New sky</button><button id="pauseBtn">Pause</button><button id="pngBtn">Save PNG</button>
@@ -50,7 +50,7 @@ import { createSky } from '../src/sky.js';
 
 const hero = createSky(document.getElementById('hero'));
 createSky(document.getElementById('card1'), { coverage: 0.35, speed: 0.5, seed: 3 });
-createSky(document.getElementById('card2'), { coverage: 0.8, speed: 2, direction: 'right', seed: 9, palette: 'summer' });
+createSky(document.getElementById('card2'), { coverage: 0.8, speed: 2, direction: 'right', seed: 9, palette: 'day' });
 createSky(document.getElementById('phone'), { seed: 42, palette: 'pastel' });
 createSky(document.getElementById('banner'), { coverage: 0.55, seed: 17 });
 

@@ -10,14 +10,14 @@
  * container is off-screen or the tab is hidden, and holds still for reduced-motion users.
  *
  * How it stays cheap: each cloud layer is painted into a snapshot image a bit wider than the
- * view. Every frame only slides those images and crossfades to the next snapshot (DT seconds
- * of sky time ahead), which is painted a strip per frame in the background. Shapes are fed
- * into the upcoming snapshots, so they cost nothing extra per frame either.
+ * view. Every frame only slides those images and crossfades to the next snapshot (a moment of
+ * sky time ahead), which is painted a strip per frame in the background. Shapes are fed into the
+ * upcoming snapshots, so they cost nothing extra per frame either.
  */
 
 export const PALETTES = {
-  day:    { skyTop: '#2a7be4', skyMid: '#5fb0f4', skyLow: '#cdeaff' },
   summer: { skyTop: '#1663d6', skyMid: '#3d9cf2', skyLow: '#bfe4ff' },
+  day:    { skyTop: '#2a7be4', skyMid: '#5fb0f4', skyLow: '#cdeaff' },
   pastel: { skyTop: '#5a9ced', skyMid: '#93c7f6', skyLow: '#e3f2ff' },
 };
 
@@ -28,12 +28,11 @@ export const SKY_DEFAULTS = {
   cloudScale: 1,         // cloud size multiplier
   direction: 'left',     // 'left' or 'right'
   seed: 0,               // any number: a different sky
-  palette: 'day',        // 'day' | 'summer' | 'pastel'; skyTop/skyMid/skyLow override it
+  palette: 'summer',     // 'summer' | 'day' | 'pastel'; skyTop/skyMid/skyLow override it
   skyTop: null, skyMid: null, skyLow: null,
   gradient: 0,           // 0 = even blue sky, 1 = deep blue fading to a pale horizon
   quality: 'high',       // 'high' | 'balanced' | 'low' — resolution of the cloud snapshots
   fps: 60,               // frame cap
-  interactive: false,    // pointer movement gently pushes the clouds, which then settle back
   planes: false,         // occasional planes with contrails
   trailLife: 40,         // seconds a contrail lingers
   respectReducedMotion: true,
@@ -42,14 +41,13 @@ export const SKY_DEFAULTS = {
 const REBUILD_KEYS = ['coverage', 'shadow', 'seed', 'direction', 'palette', 'skyTop', 'skyMid', 'skyLow', 'gradient'];
 const RESETUP_KEYS = ['cloudScale', 'quality'];
 const QUALITY = { high: 1.25, balanced: 1.0, low: 0.75 };   // snapshot pixels per CSS pixel
-const DT = 2.0;            // seconds of sky time between snapshots
-const STRIPS = 24;         // frames used to paint one snapshot
 const MARGIN = 0.3;        // extra cloud space on each side of the view, in cloud units
-const MAX_GUSTS = 12;
 const PLANE_SPEED = 0.06;  // cloud units per second
+// dt: seconds of sky time between snapshots; strips: frames used to paint one snapshot.
+// The near layer refreshes often so shapes visibly gather and melt; the far layer barely changes.
 const LAYERS = [
-  { scale: 0.6, seed: [41.3, 7.7], speed: 0.006, morph: 0.004, haze: 0.35, farMask: 1, push: 0.4 },
-  { scale: 1.1, seed: [13.7, 5.3], speed: 0.016, morph: 0.008, haze: 0.0,  farMask: 0, push: 1.0 },
+  { scale: 0.6, seed: [41.3, 7.7], speed: 0.006, morph: 0.004, haze: 0.35, farMask: 1, dt: 2.0, strips: 24 },
+  { scale: 1.1, seed: [13.7, 5.3], speed: 0.016, morph: 0.008, haze: 0.0,  farMask: 0, dt: 0.5, strips: 12 },
 ];
 
 /**
@@ -82,7 +80,7 @@ uniform float uUpp;           // cloud units per snapshot pixel
 uniform float uViewH;         // view height in cloud units
 uniform float uMorph, uScale, uCov, uShadow, uHaze, uFarMask;
 uniform vec2 uSeed;
-uniform sampler2D uShape;     // R = shape, G = wide halo around it (cleared of other cloud)
+uniform sampler2D uShape;     // R = the shape (softened), G = wide area around it
 uniform vec4 uShapeRect;      // cloud-space x0, y0, width, height of the shape image
 uniform float uShapeAmt;      // 0 = no shape, 1 = fully formed
 out vec4 outColor;
@@ -109,31 +107,60 @@ float billow(vec2 p, int oct){
   for (int i = 0; i < 6; i++){ if (i >= oct) break; s += a * abs(gnoise(p)) * 1.4; n += a; p = ROT * p * 2.03 + vec2(4.3, 1.1); a *= 0.5; }
   return s / n;
 }
-// shapes: pull cloud into the silhouette and thin out the clouds around it
-// bil: the cloud's own billow noise, so a shape keeps lumpy cloud texture inside and torn edges
-float withShape(float v, vec2 p, float bil){
-  if (uShapeAmt <= 0.0) return v;
+
+// ---- shapes
+vec2 shapeAt(vec2 p){
   vec2 su = (p - uShapeRect.xy) / uShapeRect.zw;
-  if (su.x < 0.0 || su.y < 0.0 || su.x > 1.0 || su.y > 1.0) return v;
-  vec2 s = texture(uShape, su).rg * uShapeAmt;
-  return mix(v, v * 0.5 - 0.15, s.g * (1.0 - s.r)) + s.r * (0.38 + 0.3 * bil);   // clear around it, not inside it
+  if (su.x < 0.0 || su.y < 0.0 || su.x > 1.0 || su.y > 1.0) return vec2(0.0);
+  return texture(uShape, su).rg;
 }
+// While a shape forms, the clouds around it drift in toward it: each point shows the cloud that was
+// a little further out (against the slope of the wide area). As the shape melts, they drift back out.
+vec2 gatherWarp(vec2 p){
+  if (uShapeAmt <= 0.0) return p;
+  vec2 m = shapeAt(p);
+  if (m.y <= 0.001) return p;
+  float e = 0.035;                                                 // wide step: averages out the 8-bit steps of the mask
+  vec2 grad = vec2(shapeAt(p + vec2(e, 0.0)).y - shapeAt(p - vec2(e, 0.0)).y,
+                   shapeAt(p + vec2(0.0, e)).y - shapeAt(p - vec2(0.0, e)).y) / (2.0 * e);
+  vec2 toward = grad / (length(grad) + 1.5);                       // fades out where the slope is flat
+  return p - toward * 0.3 * uShapeAmt * m.y * (1.0 - smoothstep(0.1, 0.6, m.x));   // not inside the shape itself
+}
+// Build the silhouette out of cloud puffs: each puff condenses on its own (in an order set by
+// large-scale noise) and the edges bulge like cumulus. The clouds around it thin out (drawn in).
+// While melting, the puffs go in reverse order.
+float withShape(float v, vec2 p, float thr, float bil){
+  if (uShapeAmt <= 0.0) return v;
+  vec2 m = shapeAt(p);
+  if (m.y <= 0.001) return v;
+  float big = fbm(p * 9.0 + vec2(3.7, 1.9), 3);                    // puffs about a letter-stroke wide
+  float small = fbm(p * 26.0 + vec2(8.1, 2.3), 2);
+  float order = clamp(big * 1.2 + 0.5, 0.0, 1.0);                  // which puffs condense first
+  float grow = smoothstep(order * 0.75, order * 0.75 + 0.2, uShapeAmt);
+  v = mix(v, v * 0.5 - 0.2, m.y * (1.0 - m.x) * uShapeAmt);
+  float fill = thr + (m.x - 0.55) * 0.55 + big * 0.35 + small * 0.15 + (bil - 0.35) * 0.2;
+  float h = clamp(0.5 + 0.5 * (fill - v) / 0.1, 0.0, 1.0);          // smooth max: no crease where fill and cloud cross
+  float both = mix(v, fill, h) + 0.1 * h * (1.0 - h);
+  return mix(v, both, grow * smoothstep(0.02, 0.2, m.x));
+}
+
 vec2 cumulus(vec2 p, float scale, vec2 seed, float cov, float morph){
-  vec2 q = p * vec2(2.2, 3.4) / scale + seed;
+  vec2 q = gatherWarp(p) * vec2(2.2, 3.4) / scale + seed;
   vec2 w = vec2(fbm(q * 0.5 + morph, 3), fbm(q * 0.5 + 5.2 - morph, 3));
   float base = fbm(q * 0.7 + w * 0.6, 4);
   float bil = billow(q * 2.0 + w, 3);
-  float v = withShape(base + 0.15 * (bil - 0.35), p, bil);
   float thr = mix(0.22, -0.12, cov);
+  float v = withShape(base + 0.15 * (bil - 0.35), p, thr, bil);
   float D = smoothstep(thr, thr + 0.22, v);
   float dome = smoothstep(thr, thr + 0.7, v);
-  return vec2(D, (0.05 * dome + 0.012 * D * bil) * scale);
+  float inShape = uShapeAmt > 0.0 ? shapeAt(p).x * uShapeAmt : 0.0;   // softer fine texture inside a shape
+  return vec2(D, (0.05 * dome + 0.012 * D * bil * (1.0 - 0.5 * inShape)) * scale);
 }
 float cumulusLite(vec2 p, float scale, vec2 seed, float cov, float morph){
   vec2 q = p * vec2(2.2, 3.4) / scale + seed;
   vec2 w = vec2(fbm(q * 0.5 + morph, 2), fbm(q * 0.5 + 5.2 - morph, 2));
-  float v = withShape(fbm(q * 0.7 + w * 0.6, 3), p, 0.35);
   float thr = mix(0.22, -0.12, cov);
+  float v = withShape(fbm(q * 0.7 + w * 0.6, 3), p, thr, 0.35);
   return smoothstep(thr, thr + 0.22, v);
 }
 void main(){
@@ -171,9 +198,6 @@ uniform vec2 uRes;
 uniform float uUnit, uViewH;
 uniform sampler2D uFarA, uFarB, uNearA, uNearB;
 uniform vec4 uFar, uNear;      // (scroll - start of A, scroll - start of B, window width, fade); offsets computed on the CPU in double precision
-uniform vec2 uPush;            // how strongly the pointer pushes the far / near layer
-uniform vec4 uGust[${MAX_GUSTS}];  // view-relative x, y and displacement dx, dy (cloud units)
-uniform int uGustN;
 uniform vec4 uPlane[2];        // view-relative start x, y and direction
 uniform vec2 uPlaneAge;        // seconds since launch, < 0 = none
 uniform float uPlaneSpeed, uTrailLife, uTrailDrift;
@@ -184,17 +208,6 @@ vec4 layerAt(sampler2D A, sampler2D B, vec4 w, vec2 p){
   vec4 a = texture(A, vec2((p.x + w.x) / w.z, vy));
   vec4 b = texture(B, vec2((p.x + w.y) / w.z, vy));
   return mix(a, b, w.w);
-}
-vec2 gust(vec2 p){
-  vec2 d = vec2(0.0);
-  for (int i = 0; i < ${MAX_GUSTS}; i++){
-    if (i >= uGustN) break;
-    vec2 r = p - uGust[i].xy;
-    d += uGust[i].zw * exp(-dot(r, r) / 0.02);
-  }
-  float len = length(d);
-  if (len > 0.15) d *= 0.15 / len;                                        // stays well inside the 0.3 side margin
-  return d * smoothstep(0.0, 0.18, p.y) * smoothstep(0.0, 0.18, uViewH - p.y);   // no sampling past the top/bottom
 }
 float vnoise(float x){
   float i = floor(x), f = fract(x);
@@ -230,8 +243,7 @@ void main(){
   vec3 col = skyAt(gl_FragCoord.y / uRes.y);
   float sd = length(ph - vec2(0.10 * uRes.x / uRes.y, 1.05));
   col += vec3(1.0, 0.97, 0.88) * (0.20 * exp(-sd * 2.2) + 0.22 * exp(-sd * 9.0));
-  vec2 g = uGustN > 0 ? gust(p) : vec2(0.0);
-  vec4 far = layerAt(uFarA, uFarB, uFar, p - g * uPush.x);
+  vec4 far = layerAt(uFarA, uFarB, uFar, p);
   col = col * (1.0 - far.a) + far.rgb;
   if (uPlaneAge.x >= 0.0 || uPlaneAge.y >= 0.0){
     float pd;
@@ -239,7 +251,7 @@ void main(){
     col = mix(col, vec3(1.0), clamp(tr, 0.0, 1.0) * 0.85);
     col = mix(col, vec3(0.95, 0.97, 1.0), pd * 0.9);
   }
-  vec4 near = layerAt(uNearA, uNearB, uNear, p - g * uPush.y);
+  vec4 near = layerAt(uNearA, uNearB, uNear, p);
   col = col * (1.0 - near.a) + near.rgb;
   col += (hash12(gl_FragCoord.xy) - 0.5) / 255.0;
   outColor = vec4(col, 1.0);
@@ -316,7 +328,6 @@ export function createSky(container, options = {}) {
   let needsSetup = true, needsRebuild = false, needsDraw = true;
   let userPaused = false, inView = true, destroyed = false, lost = false;
   let framesDrawn = 0, lostCount = 0, lastGlError = 0;
-  const gusts = [];               // { x, y, dx, dy, born }
   const planes = [];              // { x, y, dx, dy, age }
   let nextPlane = 8;
   let shape = null;               // { rect, t0, form, hold, fade, image }
@@ -324,7 +335,7 @@ export function createSky(container, options = {}) {
   const dir = () => (S.direction === 'right' ? -1 : 1);
   const effectiveSpeed = () => (S.respectReducedMotion && reduceMotion?.matches ? 0 : S.speed);
   const colors = () => {
-    const p = PALETTES[S.palette] || PALETTES.day;
+    const p = PALETTES[S.palette] || PALETTES.summer;
     return [S.skyTop || p.skyTop, S.skyMid || p.skyMid, S.skyLow || p.skyLow].map(hex);
   };
 
@@ -361,13 +372,13 @@ export function createSky(container, options = {}) {
     layers = LAYERS.map(L => ({ ...L, snaps: null }));
     needsSetup = true;
   }
-  function makeSnap() {
+  function makeSnap(L) {
     const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, cacheW, cacheH, 0, gl.RGBA, gl.UNSIGNED_BYTE, null); texParams();
     const fb = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    return { tex, fb, time: 0, x0: 0, strip: STRIPS };
+    return { tex, fb, time: 0, x0: 0, strip: L.strips };
   }
   const freeSnap = s => { gl.deleteTexture(s.tex); gl.deleteFramebuffer(s.fb); };
   const layerSeed = L => [L.seed[0] + S.seed * 7.31, L.seed[1] + S.seed * 3.17];
@@ -391,7 +402,7 @@ export function createSky(container, options = {}) {
     gl.bindFramebuffer(gl.FRAMEBUFFER, snap.fb);
     gl.viewport(0, 0, cacheW, cacheH);
     if (strip >= 0) {
-      const x = Math.floor(cacheW * strip / STRIPS), x2 = Math.floor(cacheW * (strip + 1) / STRIPS);
+      const x = Math.floor(cacheW * strip / L.strips), x2 = Math.floor(cacheW * (strip + 1) / L.strips);
       gl.enable(gl.SCISSOR_TEST); gl.scissor(x, 0, x2 - x, cacheH);
     }
     gl.uniform2f(u.uWin0, snap.x0, 0); gl.uniform1f(u.uUpp, viewH / cacheH); gl.uniform1f(u.uViewH, viewH);
@@ -410,7 +421,7 @@ export function createSky(container, options = {}) {
   function rebuildAll() {
     for (const L of layers) {
       const t0 = L.snaps[0].time;
-      L.snaps.forEach((s, k) => { place(L, s, t0 + k * DT); paint(L, s, -1); s.strip = STRIPS; });
+      L.snaps.forEach((s, k) => { place(L, s, t0 + k * L.dt); paint(L, s, -1); s.strip = L.strips; });
     }
   }
   function setupCaches() {
@@ -425,55 +436,20 @@ export function createSky(container, options = {}) {
     for (const L of layers) {
       const t0 = L.snaps ? L.snaps[0].time : simTime;
       if (L.snaps) L.snaps.forEach(freeSnap);
-      L.snaps = [makeSnap(), makeSnap(), makeSnap()];
-      L.snaps.forEach((s, k) => place(L, s, t0 + k * DT));
+      L.snaps = [makeSnap(L), makeSnap(L), makeSnap(L)];
+      L.snaps.forEach((s, k) => place(L, s, t0 + k * L.dt));
     }
     rebuildAll();
   }
   function advance(L) {
     while (simTime >= L.snaps[1].time) {
       const [A, B, C] = L.snaps;
-      while (C.strip < STRIPS) paint(L, C, C.strip++);
-      place(L, A, C.time + DT); A.strip = 0;
+      while (C.strip < L.strips) paint(L, C, C.strip++);
+      place(L, A, C.time + L.dt); A.strip = 0;
       L.snaps = [B, C, A];
     }
     const C = L.snaps[2];
-    if (C.strip < STRIPS) paint(L, C, C.strip++);
-  }
-
-  // ---------- pointer wind ----------
-  let lastPtr = null;
-  function onPointerMove(e) {
-    if (!S.interactive || !unit) return;
-    const r = container.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
-    const x = (e.clientX - r.left) * dpr / unit, y = (r.bottom - e.clientY) * dpr / unit;
-    const now = performance.now();
-    if (lastPtr) {
-      const dt = Math.max((now - lastPtr.t) / 1000, 0.008);
-      const dx = x - lastPtr.x, dy = y - lastPtr.y;
-      if (Math.hypot(dx, dy) > 0.015) {
-        let vx = dx / dt, vy = dy / dt;
-        const sp = Math.hypot(vx, vy), cap = 0.6;          // ignore frantic flicks
-        if (sp > cap) { vx *= cap / sp; vy *= cap / sp; }
-        gusts.push({ x, y, dx: vx * 0.09, dy: vy * 0.09, born: now });
-        if (gusts.length > MAX_GUSTS) gusts.shift();
-        lastPtr = { x, y, t: now };
-        redraw(false);
-      }
-    } else lastPtr = { x, y, t: now };
-  }
-  const onPointerLeave = () => { lastPtr = null; };
-  container.addEventListener('pointermove', onPointerMove, { passive: true });
-  container.addEventListener('pointerleave', onPointerLeave, { passive: true });
-  function gustUniforms(now) {
-    while (gusts.length && now - gusts[0].born > 5000) gusts.shift();
-    const data = new Float32Array(MAX_GUSTS * 4);
-    gusts.forEach((g, i) => {
-      const age = (now - g.born) / 1000;
-      const env = Math.min(age / 0.15, 1) * Math.exp(-Math.max(age - 0.15, 0) / 1.1);   // push, then settle back
-      data.set([g.x, g.y, g.dx * env, g.dy * env], i * 4);
-    });
-    return data;
+    if (C.strip < L.strips) paint(L, C, C.strip++);
   }
 
   // ---------- planes ----------
@@ -505,19 +481,19 @@ export function createSky(container, options = {}) {
   }
   function buildShapeImage(src) {
     const sil = silhouette(src, 220);
-    const pad = Math.round(sil.height * 0.45);
+    const pad = Math.round(sil.height * 0.5);
     const w = sil.width + pad * 2, h = sil.height + pad * 2;
     const c = document.createElement('canvas'); c.width = w; c.height = h;
     const cx = c.getContext('2d'); cx.drawImage(sil, pad, pad);
     const px = cx.getImageData(0, 0, w, h).data, alpha = new Float32Array(w * h);
     for (let i = 0; i < w * h; i++) alpha[i] = px[i * 4 + 3];
-    const near = blurAlpha(alpha, w, h, 9), wide = blurAlpha(alpha, w, h, 34);
+    const near = blurAlpha(alpha, w, h, 16), wide = blurAlpha(alpha, w, h, 44);   // soft silhouette: the puffs shape the edge
     const data = new Uint8Array(w * h * 4);
     for (let y = 0; y < h; y++) {                 // write rows bottom-up (GL texture order)
       for (let x = 0; x < w; x++) {
         const s = (h - 1 - y) * w + x, d = (y * w + x) * 4;
         data[d] = Math.min(255, near[s]);
-        data[d + 1] = Math.min(255, wide[s] * 1.8);
+        data[d + 1] = Math.min(255, wide[s] * 1.4);
         data[d + 3] = 255;
       }
     }
@@ -526,13 +502,13 @@ export function createSky(container, options = {}) {
   function placeShape(src, o) {
     const img = buildShapeImage(src);
     const N = layers[1];
-    const t0 = N.snaps ? N.snaps[2].time : simTime + DT;   // first snapshot not painted yet
+    const t0 = N.snaps ? N.snaps[2].time : simTime + N.dt;   // first snapshot not painted yet
     const vw = canvas.width / unit;
     const hUnits = (o.size ?? 0.32) * viewH * (img.height / img.silH);
     const wUnits = hUnits * img.width / img.height;
     const cx = (o.x ?? 0.5) * vw + dir() * N.speed * t0, cy = (o.y ?? 0.6) * viewH;
     shape = { image: img, rect: [cx - wUnits / 2, cy - hUnits / 2, wUnits, hUnits], t0,
-              form: o.form ?? 4, hold: o.hold ?? 6, fade: o.fade ?? 8 };
+              form: o.form ?? 5, hold: o.hold ?? 5, fade: o.fade ?? 7 };
     uploadShape(img);
     redraw();
   }
@@ -543,8 +519,7 @@ export function createSky(container, options = {}) {
     raf = 0;
     if (destroyed || lost) return;
     const moving = running() && effectiveSpeed() > 0;
-    const stirring = inView && !document.hidden && gusts.length > 0;
-    if ((moving || stirring) && now - lastDraw < 1000 / S.fps - 1 && !needsDraw) { schedule(); return; }
+    if (moving && now - lastDraw < 1000 / S.fps - 1 && !needsDraw) { schedule(); return; }
     const dt = last ? Math.min((now - last) / 1000, 0.1) : 0;
     last = now;
     if (container.clientWidth < 1 || container.clientHeight < 1) return;    // not laid out yet
@@ -555,13 +530,13 @@ export function createSky(container, options = {}) {
     if (needsRebuild) { rebuildAll(); needsRebuild = false; }
     if (moving) { const sdt = dt * effectiveSpeed(); simTime += sdt; updatePlanes(sdt); }
     for (const L of layers) advance(L);
-    composite(now);
+    composite();
     framesDrawn++;
     if (framesDrawn <= 3) { const e = gl.getError(); if (e) lastGlError = e; }   // cheap check on the first frames only
     lastDraw = now; needsDraw = false;
-    if (moving || gusts.length) schedule();
+    if (moving) schedule();
   }
-  function composite(now = performance.now()) {
+  function composite() {
     const u = compProg.u;
     gl.useProgram(compProg.p);
     gl.viewport(0, 0, canvas.width, canvas.height);
@@ -575,11 +550,9 @@ export function createSky(container, options = {}) {
     // offsets of the view inside each snapshot, subtracted here in double precision (stays exact on long runs)
     const win = L => {
       const scroll = dir() * L.speed * simTime;
-      return [scroll - L.snaps[0].x0, scroll - L.snaps[1].x0, winW, Math.min(1, Math.max(0, (simTime - L.snaps[0].time) / DT))];
+      return [scroll - L.snaps[0].x0, scroll - L.snaps[1].x0, winW, Math.min(1, Math.max(0, (simTime - L.snaps[0].time) / L.dt))];
     };
     gl.uniform4fv(u.uFar, win(F)); gl.uniform4fv(u.uNear, win(N));
-    gl.uniform2f(u.uPush, F.push, N.push);
-    gl.uniform4fv(u.uGust, gustUniforms(now)); gl.uniform1i(u.uGustN, gusts.length);
     const pv = new Float32Array(8), pa = [-1, -1];
     planes.forEach((pl, i) => { pv.set([pl.x, pl.y, pl.dx, pl.dy], i * 4); pa[i] = pl.age; });
     gl.uniform4fv(u.uPlane, pv); gl.uniform2fv(u.uPlaneAge, pa);
@@ -654,8 +627,8 @@ export function createSky(container, options = {}) {
       redraw(false);
     },
     /**
-     * Clouds gather into a shape, hold it, then melt back into ordinary clouds while drifting.
-     * { text } or { image: HTMLImageElement | canvas | url }, plus optional
+     * The clouds nearby drift in and gather into a shape, hold it, then melt back into ordinary
+     * clouds while drifting. { text } or { image: HTMLImageElement | canvas | url }, plus optional
      * x, y (0..1 of the view, centre), size (0..1 of the view height), form, hold, fade (seconds).
      * Needs speed > 0: shapes form as the sky moves on.
      */
@@ -681,8 +654,6 @@ export function createSky(container, options = {}) {
       destroyed = true; if (raf) cancelAnimationFrame(raf); clearTimeout(fallbackTimer);
       ro.disconnect(); io.disconnect(); document.removeEventListener('visibilitychange', onVis);
       reduceMotion?.removeEventListener?.('change', onMotionPref);
-      container.removeEventListener('pointermove', onPointerMove);
-      container.removeEventListener('pointerleave', onPointerLeave);
       dprQuery?.removeEventListener('change', onDpr);
       gl?.getExtension('WEBGL_lose_context')?.loseContext();
       canvas.remove();

@@ -3,7 +3,7 @@
  *
  *   import { Sky } from 'sky-kit/react';
  *   const ref = useRef(null);
- *   <Sky ref={ref} coverage={0.6} interactive style={{ height: 400 }}>
+ *   <Sky ref={ref} coverage={0.6} style={{ height: 400 }}>
  *     <h1>Overlay content</h1>
  *   </Sky>
  *   ref.current.showShape({ text: 'hi' });

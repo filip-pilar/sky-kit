@@ -26,15 +26,15 @@ struct ShapeMask {
 
     static func make(_ source: SkyShapeSource, pixelHeight px: Int = 220) -> ShapeMask? {
         guard let (sil, sw, sh) = silhouette(source, px: px) else { return nil }
-        let pad = Int((Double(sh) * 0.45).rounded())
+        let pad = Int((Double(sh) * 0.5).rounded())
         let w = sw + pad * 2, h = sh + pad * 2
         var alpha = [Float](repeating: 0, count: w * h)
         for y in 0..<sh { for x in 0..<sw { alpha[(y + pad) * w + x + pad] = sil[y * sw + x] } }
-        let near = blur(alpha, w, h, radius: 9), wide = blur(alpha, w, h, radius: 34)
+        let near = blur(alpha, w, h, radius: 16), wide = blur(alpha, w, h, radius: 44)   // soft silhouette: the puffs shape the edge
         var rgba = [UInt8](repeating: 0, count: w * h * 4)
         for i in 0..<(w * h) {
             rgba[i * 4] = UInt8(min(255, near[i]))
-            rgba[i * 4 + 1] = UInt8(min(255, wide[i] * 1.8))
+            rgba[i * 4 + 1] = UInt8(min(255, wide[i] * 1.4))
             rgba[i * 4 + 3] = 255
         }
         return ShapeMask(width: w, height: h, rgba: rgba, silhouetteHeight: sh)

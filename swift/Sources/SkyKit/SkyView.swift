@@ -14,15 +14,13 @@ public final class SkyController: ObservableObject {
 
     /// Send a plane across. Points are 0…1 of the view with y = 0 at the bottom; nil = from a random side.
     public func flyPlane(from: CGPoint? = nil, to: CGPoint? = nil) { renderer?.flyPlane(from: from, to: to); wake?() }
-    /// Clouds gather into a shape, hold it, then melt back into ordinary clouds. Needs speed > 0.
+    /// The clouds nearby drift in and gather into a shape, hold it, then melt back. Needs speed > 0.
     public func showShape(_ source: SkyShapeSource, x: Double = 0.5, y: Double = 0.6, size: Double = 0.32,
-                          form: Double = 4, hold: Double = 6, fade: Double = 8) {
+                          form: Double = 5, hold: Double = 5, fade: Double = 7) {
         renderer?.showShape(source, x: x, y: y, size: size, form: form, hold: hold, fade: fade)
         wake?()
     }
     public func clearShape() { renderer?.clearShape() }
-    func pointerMoved(to p: CGPoint, in size: CGSize) { renderer?.pointerMoved(to: p, in: size); wake?() }
-    func pointerEnded() { renderer?.pointerEnded() }
     /// The clouds at the current moment as an image, rendered offscreen at any size (planes and shapes not included).
     public func snapshot(width: Int, height: Int, pixelsPerPoint: Double = 2) -> CGImage? {
         guard let r = renderer, let copy = try? SkyRenderer(device: r.device, options: r.options) else { return nil }
@@ -49,20 +47,7 @@ public struct SkyView: View {
 
     public var body: some View {
         let controller = external ?? own
-        GeometryReader { geo in
-            SkyMetalView(options: options, controller: controller)
-                .onContinuousHover(coordinateSpace: .local) { phase in
-                    guard options.interactive else { return }
-                    switch phase {
-                    case .active(let p): controller.pointerMoved(to: p, in: geo.size)
-                    case .ended: controller.pointerEnded()
-                    }
-                }
-                .simultaneousGesture(DragGesture(minimumDistance: 0)
-                    .onChanged { v in if options.interactive { controller.pointerMoved(to: v.location, in: geo.size) } }
-                    .onEnded { _ in controller.pointerEnded() },
-                    including: options.interactive ? .all : .subviews)
-        }
+        SkyMetalView(options: options, controller: controller)
     }
 }
 

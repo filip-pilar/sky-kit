@@ -3,7 +3,7 @@ import simd
 /// Settings for the sky. Mirrors the web package's options (same names, same defaults).
 public struct SkyOptions: Equatable, Sendable {
     public enum Direction: Sendable { case left, right }
-    public enum Palette: String, Sendable, CaseIterable { case day, summer, pastel }
+    public enum Palette: String, Sendable, CaseIterable { case summer, day, pastel }
     public enum Quality: Sendable { case high, balanced, low }
 
     /// 0 = still, 1 = gentle drift, 4 = brisk.
@@ -17,7 +17,7 @@ public struct SkyOptions: Equatable, Sendable {
     public var direction: Direction = .left
     /// Any number gives a different sky.
     public var seed: Double = 0
-    public var palette: Palette = .day
+    public var palette: Palette = .summer
     /// Custom sky colours; override the palette when set.
     public var colors: SkyColors? = nil
     /// 0 = even blue sky, 1 = deep blue fading to a pale horizon.
@@ -25,8 +25,6 @@ public struct SkyOptions: Equatable, Sendable {
     /// Resolution of the cloud snapshots.
     public var quality: Quality = .high
     public var fps: Int = 60
-    /// Pointer / touch movement gently pushes the clouds, which then settle back.
-    public var interactive = false
     /// Occasional planes with contrails.
     public var planes = false
     /// Seconds a contrail lingers.
@@ -35,12 +33,12 @@ public struct SkyOptions: Equatable, Sendable {
     public var respectReducedMotion = true
 
     public init(speed: Double = 1, coverage: Double = 0.6, shadow: Double = 0.3, cloudScale: Double = 1,
-                direction: Direction = .left, seed: Double = 0, palette: Palette = .day, colors: SkyColors? = nil,
-                gradient: Double = 0, quality: Quality = .high, fps: Int = 60, interactive: Bool = false, planes: Bool = false,
+                direction: Direction = .left, seed: Double = 0, palette: Palette = .summer, colors: SkyColors? = nil,
+                gradient: Double = 0, quality: Quality = .high, fps: Int = 60, planes: Bool = false,
                 trailLife: Double = 40, respectReducedMotion: Bool = true) {
         self.speed = speed; self.coverage = coverage; self.shadow = shadow; self.cloudScale = cloudScale
         self.direction = direction; self.seed = seed; self.palette = palette; self.colors = colors; self.gradient = gradient
-        self.quality = quality; self.fps = fps; self.interactive = interactive; self.planes = planes
+        self.quality = quality; self.fps = fps; self.planes = planes
         self.trailLife = trailLife; self.respectReducedMotion = respectReducedMotion
     }
 

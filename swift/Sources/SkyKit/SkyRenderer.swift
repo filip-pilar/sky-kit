@@ -26,14 +26,16 @@ public final class SkyRenderer {
     private let emptyTexture: MTLTexture
 
     // Same constants as web/src/sky.js
-    private static let dt = 2.0, strips = 24, margin = 0.3, maxGusts = 12, planeSpeed = 0.06
+    private static let margin = 0.3, planeSpeed = 0.06
     private static let qualityFactor: [SkyOptions.Quality: Double] = [.high: 1.25, .balanced: 1.0, .low: 0.75]
-    private struct LayerDef { let scale: Double, seed: SIMD2<Double>, speed: Double, morph: Double, haze: Double, farMask: Double, push: Double }
+    /// dt: seconds of sky time between snapshots; strips: frames used to paint one snapshot.
+    /// The near layer refreshes often so shapes visibly gather and melt; the far layer barely changes.
+    private struct LayerDef { let scale: Double, seed: SIMD2<Double>, speed: Double, morph: Double, haze: Double, farMask: Double, dt: Double, strips: Int }
     private static let layerDefs = [
-        LayerDef(scale: 0.6, seed: [41.3, 7.7], speed: 0.006, morph: 0.004, haze: 0.35, farMask: 1, push: 0.4),
-        LayerDef(scale: 1.1, seed: [13.7, 5.3], speed: 0.016, morph: 0.008, haze: 0.0, farMask: 0, push: 1.0),
+        LayerDef(scale: 0.6, seed: [41.3, 7.7], speed: 0.006, morph: 0.004, haze: 0.35, farMask: 1, dt: 2.0, strips: 24),
+        LayerDef(scale: 1.1, seed: [13.7, 5.3], speed: 0.016, morph: 0.008, haze: 0.0, farMask: 0, dt: 0.5, strips: 12),
     ]
-    private final class Snap { let tex: MTLTexture; var time = 0.0; var x0 = 0.0; var strip = SkyRenderer.strips; init(_ t: MTLTexture) { tex = t } }
+    private final class Snap { let tex: MTLTexture; var time = 0.0; var x0 = 0.0; var strip: Int; init(_ t: MTLTexture, strips: Int) { tex = t; strip = strips } }
     private struct Layer { let def: LayerDef; var snaps: [Snap] }
 
     private var layers: [Layer] = []
@@ -42,12 +44,9 @@ public final class SkyRenderer {
     private var needsSetup = true, needsRebuild = false
 
     // extras
-    private struct Gust { var x, y, dx, dy: Double; var born: CFTimeInterval }
     private struct Plane { var x, y, dx, dy: Double; var age = 0.0 }
     private struct Shape { let texture: MTLTexture; var rect: SIMD4<Float>; var t0: Double; let form, hold, fade: Double }
     private struct PendingShape { let mask: ShapeMask; let x, y, size, form, hold, fade: Double }
-    private var gusts: [Gust] = []
-    private var lastPointer: (x: Double, y: Double, t: CFTimeInterval)?
     private var planes: [Plane] = []
     private var nextPlane = 8.0
     private var shape: Shape?
@@ -56,7 +55,7 @@ public final class SkyRenderer {
     // GPU parameter blocks (all float4, so Swift and Metal layouts match)
     private struct GPUColors { var top: SIMD4<Float>, mid: SIMD4<Float>, low: SIMD4<Float> }
     private struct CloudParams { var a, b, c, d, shapeRect: SIMD4<Float>; var sky: GPUColors }
-    private struct CompositeParams { var a, far, near, scroll: SIMD4<Float>; var sky: GPUColors }
+    private struct CompositeParams { var a, far, near: SIMD4<Float>; var sky: GPUColors }
 
     public init(device: MTLDevice? = MTLCreateSystemDefaultDevice(), options: SkyOptions = SkyOptions()) throws {
         guard let device, let queue = device.makeCommandQueue() else { throw RendererError.noDevice }
@@ -114,8 +113,8 @@ public final class SkyRenderer {
 
     private var dir: Double { options.direction == .right ? -1 : 1 }
     private var effectiveSpeed: Double { options.respectReducedMotion && reduceMotion ? 0 : options.speed }
-    /// True while anything is moving (the host can pause its display link otherwise).
-    public var isAnimating: Bool { effectiveSpeed > 0 || !gusts.isEmpty }
+    /// True while the sky is moving (the host can pause its display link otherwise).
+    public var isAnimating: Bool { effectiveSpeed > 0 }
 
     private func setup() {
         let q = min(1, max(0.35, (Self.qualityFactor[options.quality] ?? 1.25) / pixelsPerPoint))
@@ -132,8 +131,8 @@ public final class SkyRenderer {
         layers = Self.layerDefs.enumerated().map { i, def in
             let t0 = i < starts.count ? starts[i] : simTime
             let snaps = (0..<3).map { k -> Snap in
-                let s = Snap(device.makeTexture(descriptor: desc)!)
-                place(def, s, time: t0 + Double(k) * Self.dt)
+                let s = Snap(device.makeTexture(descriptor: desc)!, strips: def.strips)
+                place(def, s, time: t0 + Double(k) * def.dt)
                 return s
             }
             return Layer(def: def, snaps: snaps)
@@ -165,7 +164,7 @@ public final class SkyRenderer {
         guard let enc = cb.makeRenderCommandEncoder(descriptor: rp) else { return }
         enc.setRenderPipelineState(cloudPipeline)
         if strip >= 0 {
-            let x = cacheW * strip / Self.strips, x2 = cacheW * (strip + 1) / Self.strips
+            let x = cacheW * strip / def.strips, x2 = cacheW * (strip + 1) / def.strips
             enc.setScissorRect(MTLScissorRect(x: x, y: 0, width: max(1, x2 - x), height: cacheH))
         }
         let seed = def.seed + SIMD2(options.seed * 7.31, options.seed * 3.17)
@@ -185,18 +184,21 @@ public final class SkyRenderer {
     private func rebuildAll(_ cb: MTLCommandBuffer) {
         for (i, l) in layers.enumerated() {
             let t0 = l.snaps[0].time
-            for (k, s) in l.snaps.enumerated() { place(l.def, s, time: t0 + Double(k) * Self.dt); paint(l.def, isNear: i == 1, s, strip: -1, cb); s.strip = Self.strips }
+            for (k, s) in l.snaps.enumerated() {
+                place(l.def, s, time: t0 + Double(k) * l.def.dt); paint(l.def, isNear: i == 1, s, strip: -1, cb); s.strip = l.def.strips
+            }
         }
     }
     private func advance(_ i: Int, _ cb: MTLCommandBuffer) {
+        let def = layers[i].def
         while simTime >= layers[i].snaps[1].time {
             let a = layers[i].snaps[0], b = layers[i].snaps[1], c = layers[i].snaps[2]
-            while c.strip < Self.strips { paint(layers[i].def, isNear: i == 1, c, strip: c.strip, cb); c.strip += 1 }
-            place(layers[i].def, a, time: c.time + Self.dt); a.strip = 0
+            while c.strip < def.strips { paint(def, isNear: i == 1, c, strip: c.strip, cb); c.strip += 1 }
+            place(def, a, time: c.time + def.dt); a.strip = 0
             layers[i].snaps = [b, c, a]
         }
         let c = layers[i].snaps[2]
-        if c.strip < Self.strips { paint(layers[i].def, isNear: i == 1, c, strip: c.strip, cb); c.strip += 1 }
+        if c.strip < def.strips { paint(def, isNear: i == 1, c, strip: c.strip, cb); c.strip += 1 }
     }
 
     // MARK: - Per-frame API
@@ -226,14 +228,13 @@ public final class SkyRenderer {
         func win(_ l: Layer) -> SIMD4<Float> {
             let scroll = dir * l.def.speed * simTime
             return SIMD4(Float(scroll - l.snaps[0].x0), Float(scroll - l.snaps[1].x0), Float(winW),
-                         Float(min(1, max(0, (simTime - l.snaps[0].time) / Self.dt))))
+                         Float(min(1, max(0, (simTime - l.snaps[0].time) / l.def.dt))))
         }
         var p = CompositeParams(
             a: SIMD4(Float(width), Float(height), Float(unit), Float(viewH)),
             far: win(layers[0]), near: win(layers[1]),
-            scroll: SIMD4(0, 0, Float(layers[0].def.push), Float(layers[1].def.push)),
             sky: gpuColors())
-        var extra = extraParams(now: CACurrentMediaTime())
+        var extra = extraParams()
         enc.setFragmentBytes(&p, length: MemoryLayout<CompositeParams>.stride, index: 0)
         enc.setFragmentBytes(&extra, length: MemoryLayout<SIMD4<Float>>.stride * extra.count, index: 1)
         enc.setFragmentTexture(layers[0].snaps[0].tex, index: 0); enc.setFragmentTexture(layers[0].snaps[1].tex, index: 1)
@@ -242,47 +243,18 @@ public final class SkyRenderer {
         enc.endEncoding()
     }
 
-    /// ExtraParams in the shader: 12 gusts, 2 planes, info, info2 (16 float4).
-    private func extraParams(now: CFTimeInterval) -> [SIMD4<Float>] {
-        gusts.removeAll { now - $0.born > 5 }
-        var out = [SIMD4<Float>](repeating: .zero, count: 16)
-        for (i, g) in gusts.prefix(Self.maxGusts).enumerated() {
-            let age = now - g.born
-            let env = min(age / 0.15, 1) * exp(-max(age - 0.15, 0) / 1.1)   // push, then settle back
-            out[i] = SIMD4(Float(g.x), Float(g.y), Float(g.dx * env), Float(g.dy * env))
-        }
+    /// ExtraParams in the shader: 2 planes, info, info2 (4 float4).
+    private func extraParams() -> [SIMD4<Float>] {
+        var out = [SIMD4<Float>](repeating: .zero, count: 4)
         var ages: [Float] = [-1, -1]
         for (i, pl) in planes.prefix(2).enumerated() {
-            out[12 + i] = SIMD4(Float(pl.x), Float(pl.y), Float(pl.dx), Float(pl.dy))
+            out[i] = SIMD4(Float(pl.x), Float(pl.y), Float(pl.dx), Float(pl.dy))
             ages[i] = Float(pl.age)
         }
-        out[14] = SIMD4(Float(min(gusts.count, Self.maxGusts)), ages[0], ages[1], Float(Self.planeSpeed))
-        out[15] = SIMD4(Float(options.trailLife), Float(-dir * layers[0].def.speed), 0, 0)
+        out[2] = SIMD4(ages[0], ages[1], Float(Self.planeSpeed), Float(options.trailLife))
+        out[3] = SIMD4(Float(-dir * layers[0].def.speed), 0, 0, 0)
         return out
     }
-
-    // MARK: - Pointer push
-
-    /// Report the pointer position (points, top-left origin, within a view of `size` points).
-    /// Moving the pointer pushes the clouds along, then they settle back. Needs options.interactive.
-    public func pointerMoved(to point: CGPoint, in size: CGSize) {
-        guard options.interactive, unit > 0 else { return }
-        let x = Double(point.x) * pixelsPerPoint / unit
-        let y = Double(size.height - point.y) * pixelsPerPoint / unit
-        let now = CACurrentMediaTime()
-        guard let last = lastPointer else { lastPointer = (x, y, now); return }
-        let dt = max(now - last.t, 0.008)
-        let dx = x - last.x, dy = y - last.y
-        guard hypot(dx, dy) > 0.015 else { return }
-        var vx = dx / dt, vy = dy / dt
-        let sp = hypot(vx, vy), cap = 0.6
-        if sp > cap { vx *= cap / sp; vy *= cap / sp }
-        gusts.append(Gust(x: x, y: y, dx: vx * 0.09, dy: vy * 0.09, born: now))
-        if gusts.count > Self.maxGusts { gusts.removeFirst() }
-        lastPointer = (x, y, now)
-    }
-    /// Call when the pointer leaves the view.
-    public func pointerEnded() { lastPointer = nil }
 
     // MARK: - Planes
 
@@ -318,12 +290,12 @@ public final class SkyRenderer {
 
     // MARK: - Shapes
 
-    /// Clouds gather into a shape, hold it, then melt back into ordinary clouds while drifting.
+    /// The clouds nearby drift in and gather into a shape, hold it, then melt back into ordinary clouds.
     /// x, y: centre, 0…1 of the view (y = 0 at the bottom); size: fraction of the view height; times in seconds.
     /// Needs speed > 0: shapes form as the sky moves on.
     @discardableResult
     public func showShape(_ source: SkyShapeSource, x: Double = 0.5, y: Double = 0.6, size: Double = 0.32,
-                          form: Double = 4, hold: Double = 6, fade: Double = 8) -> Bool {
+                          form: Double = 5, hold: Double = 5, fade: Double = 7) -> Bool {
         guard let mask = ShapeMask.make(source) else { return false }
         let p = PendingShape(mask: mask, x: x, y: y, size: size, form: form, hold: hold, fade: fade)
         if layers.count == 2 { placeShape(p) } else { pendingShape = p }

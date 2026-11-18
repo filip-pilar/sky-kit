@@ -4,8 +4,8 @@
 //  - Metal's [[position]] has its origin at the top-left; all math uses GL-style
 //    coordinates (origin bottom-left): frag = (pos.x, targetHeight - pos.y).
 //  - dfdy follows the flipped y axis, so its sign is negated.
-//  - Texture row 0 is the top in Metal, so snapshots are sampled at v = 1 - y.
-// Compiled at runtime with fast math off so the noise hash matches WebGL bit for bit (as near as GPUs allow).
+//  - Texture row 0 is the top in Metal, so snapshots and the shape mask are sampled at v = 1 - y.
+// Compiled at runtime with fast math off so the noise hash matches WebGL as closely as GPUs allow.
 
 enum SkyShaders {
     static let source = #"""
@@ -64,33 +64,60 @@ static float3 skyAt(float v, constant SkyColors& c) {
 // shapeRect = cloud-space (x0, y0, width, height) of the shape image
 struct CloudParams { float4 a; float4 b; float4 c; float4 d; float4 shapeRect; SkyColors sky; };
 
-// shapes: pull cloud into the silhouette (keeping the cloud's own billow texture) and thin the clouds around it.
-// The mask texture has top-down rows, so it is sampled at 1 - y.
-static float withShape(float v, float2 p, float bil, constant CloudParams& P, texture2d<float> shape) {
+// ---- shapes (the mask texture has top-down rows, so it is sampled at 1 - y)
+static float2 shapeAt(float2 p, constant CloudParams& P, texture2d<float> shape) {
+    float2 su = (p - P.shapeRect.xy) / P.shapeRect.zw;
+    if (su.x < 0.0 || su.y < 0.0 || su.x > 1.0 || su.y > 1.0) return float2(0.0);
+    constexpr sampler s(filter::linear, address::clamp_to_edge);
+    return shape.sample(s, float2(su.x, 1.0 - su.y)).rg;
+}
+// While a shape forms, the clouds around it drift in toward it; as it melts they drift back out.
+static float2 gatherWarp(float2 p, constant CloudParams& P, texture2d<float> shape) {
+    float amt = P.d.y;
+    if (amt <= 0.0) return p;
+    float2 m = shapeAt(p, P, shape);
+    if (m.y <= 0.001) return p;
+    float e = 0.035;
+    float2 grad = float2(shapeAt(p + float2(e, 0.0), P, shape).y - shapeAt(p - float2(e, 0.0), P, shape).y,
+                         shapeAt(p + float2(0.0, e), P, shape).y - shapeAt(p - float2(0.0, e), P, shape).y) / (2.0 * e);
+    float2 toward = grad / (length(grad) + 1.5);
+    return p - toward * 0.3 * amt * m.y * (1.0 - smoothstep(0.1, 0.6, m.x));
+}
+// The silhouette is built out of cloud puffs that condense one by one (reverse order while melting);
+// the clouds around it thin out because they were drawn in.
+static float withShape(float v, float2 p, float thr, float bil, constant CloudParams& P, texture2d<float> shape) {
     float amt = P.d.y;
     if (amt <= 0.0) return v;
-    float2 su = (p - P.shapeRect.xy) / P.shapeRect.zw;
-    if (su.x < 0.0 || su.y < 0.0 || su.x > 1.0 || su.y > 1.0) return v;
-    constexpr sampler s(filter::linear, address::clamp_to_edge);
-    float2 m = shape.sample(s, float2(su.x, 1.0 - su.y)).rg * amt;
-    return mix(v, v * 0.5 - 0.15, m.y * (1.0 - m.x)) + m.x * (0.38 + 0.3 * bil);
+    float2 m = shapeAt(p, P, shape);
+    if (m.y <= 0.001) return v;
+    float big = fbm(p * 9.0 + float2(3.7, 1.9), 3);
+    float small = fbm(p * 26.0 + float2(8.1, 2.3), 2);
+    float order = clamp(big * 1.2 + 0.5, 0.0, 1.0);
+    float grow = smoothstep(order * 0.75, order * 0.75 + 0.2, amt);
+    v = mix(v, v * 0.5 - 0.2, m.y * (1.0 - m.x) * amt);
+    float fill = thr + (m.x - 0.55) * 0.55 + big * 0.35 + small * 0.15 + (bil - 0.35) * 0.2;
+    float h = clamp(0.5 + 0.5 * (fill - v) / 0.1, 0.0, 1.0);
+    float both = mix(v, fill, h) + 0.1 * h * (1.0 - h);
+    return mix(v, both, grow * smoothstep(0.02, 0.2, m.x));
 }
+
 static float2 cumulus(float2 p, float scale, float2 seed, float cov, float morph, constant CloudParams& P, texture2d<float> shape) {
-    float2 q = p * float2(2.2, 3.4) / scale + seed;
+    float2 q = gatherWarp(p, P, shape) * float2(2.2, 3.4) / scale + seed;
     float2 w = float2(fbm(q * 0.5 + morph, 3), fbm(q * 0.5 + 5.2 - morph, 3));
     float base = fbm(q * 0.7 + w * 0.6, 4);
     float bil = billow(q * 2.0 + w, 3);
-    float v = withShape(base + 0.15 * (bil - 0.35), p, bil, P, shape);
     float thr = mix(0.22, -0.12, cov);
+    float v = withShape(base + 0.15 * (bil - 0.35), p, thr, bil, P, shape);
     float D = smoothstep(thr, thr + 0.22, v);
     float dome = smoothstep(thr, thr + 0.7, v);
-    return float2(D, (0.05 * dome + 0.012 * D * bil) * scale);
+    float inShape = P.d.y > 0.0 ? shapeAt(p, P, shape).x * P.d.y : 0.0;
+    return float2(D, (0.05 * dome + 0.012 * D * bil * (1.0 - 0.5 * inShape)) * scale);
 }
 static float cumulusLite(float2 p, float scale, float2 seed, float cov, float morph, constant CloudParams& P, texture2d<float> shape) {
     float2 q = p * float2(2.2, 3.4) / scale + seed;
     float2 w = float2(fbm(q * 0.5 + morph, 2), fbm(q * 0.5 + 5.2 - morph, 2));
-    float v = withShape(fbm(q * 0.7 + w * 0.6, 3), p, 0.35, P, shape);
     float thr = mix(0.22, -0.12, cov);
+    float v = withShape(fbm(q * 0.7 + w * 0.6, 3), p, thr, 0.35, P, shape);
     return smoothstep(thr, thr + 0.22, v);
 }
 
@@ -131,34 +158,21 @@ fragment float4 sky_cloud(VOut in [[stage_in]], constant CloudParams& P [[buffer
 
 // a = (width, height, unit, viewH)
 // far/near = (scroll - start of A, scroll - start of B, window width, fade); offsets computed on the CPU in double precision
-// scroll = (unused, unused, push far, push near)
-struct CompositeParams { float4 a; float4 far; float4 near; float4 scroll; SkyColors sky; };
+struct CompositeParams { float4 a; float4 far; float4 near; SkyColors sky; };
 
-// gust[i] = view-relative (x, y, dx, dy) in cloud units; plane[i] = (start x, start y, dir x, dir y)
-// info = (gust count, plane A age, plane B age, plane speed)   info2 = (trail life, trail drift, 0, 0)
-struct ExtraParams { float4 gust[12]; float4 plane[2]; float4 info; float4 info2; };
+// plane[i] = (start x, start y, dir x, dir y)   info = (plane A age, plane B age, plane speed, trail life)
+// info2 = (trail drift, 0, 0, 0)
+struct ExtraParams { float4 plane[2]; float4 info; float4 info2; };
 
-static float2 gustAt(float2 p, float viewH, constant ExtraParams& E) {
-    float2 d = float2(0.0);
-    int n = int(E.info.x);
-    for (int i = 0; i < 12; i++) {
-        if (i >= n) break;
-        float2 r = p - E.gust[i].xy;
-        d += E.gust[i].zw * exp(-dot(r, r) / 0.02);
-    }
-    float len = length(d);
-    if (len > 0.15) d *= 0.15 / len;                                          // stays well inside the 0.3 side margin
-    return d * smoothstep(0.0, 0.18, p.y) * smoothstep(0.0, 0.18, viewH - p.y);   // no sampling past the top/bottom
-}
 static float vnoise(float x) {
     float i = floor(x), f = fract(x);
     return mix(hash12(float2(i, 7.1)), hash12(float2(i + 1.0, 7.1)), f * f * (3.0 - 2.0 * f));
 }
 static float contrails(float2 p, constant ExtraParams& E, thread float& planeDot) {
     float tr = 0.0; planeDot = 0.0;
-    float speed = E.info.w, life = E.info2.x, drift = E.info2.y;
+    float speed = E.info.z, life = E.info.w, drift = E.info2.x;
     for (int i = 0; i < 2; i++) {
-        float age = i == 0 ? E.info.y : E.info.z;
+        float age = i == 0 ? E.info.x : E.info.y;
         if (age < 0.0) continue;
         float2 S = E.plane[i].xy, D = E.plane[i].zw;
         float head = age * speed;
@@ -197,16 +211,15 @@ fragment float4 sky_composite(VOut in [[stage_in]], constant CompositeParams& P 
     float3 col = skyAt(frag.y / P.a.y, P.sky);
     float sd = length(ph - float2(0.10 * P.a.x / P.a.y, 1.05));
     col += float3(1.0, 0.97, 0.88) * (0.20 * exp(-sd * 2.2) + 0.22 * exp(-sd * 9.0));
-    float2 g = E.info.x > 0.0 ? gustAt(p, P.a.w, E) : float2(0.0);
-    float4 far = layerAt(farA, farB, P.far, p - g * P.scroll.z, P.a.w);
+    float4 far = layerAt(farA, farB, P.far, p, P.a.w);
     col = col * (1.0 - far.a) + far.rgb;
-    if (E.info.y >= 0.0 || E.info.z >= 0.0) {
+    if (E.info.x >= 0.0 || E.info.y >= 0.0) {
         float pd;
         float tr = contrails(p, E, pd);
         col = mix(col, float3(1.0), clamp(tr, 0.0, 1.0) * 0.85);
         col = mix(col, float3(0.95, 0.97, 1.0), pd * 0.9);
     }
-    float4 near = layerAt(nearA, nearB, P.near, p - g * P.scroll.w, P.a.w);
+    float4 near = layerAt(nearA, nearB, P.near, p, P.a.w);
     col = col * (1.0 - near.a) + near.rgb;
     col += (hash12(frag) - 0.5) / 255.0;
     return float4(col, 1.0);
