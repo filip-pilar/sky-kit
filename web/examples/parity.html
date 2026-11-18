@@ -21,6 +21,9 @@ if (devicePixelRatio !== 2) out.textContent = `note: devicePixelRatio is ${devic
 const sky = createSky(document.getElementById('box'));
 sky.pause();                                   // only _step advances time
 await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+// same extras as `sky-render --text … --plane`
+if (q.get('text')) await sky.showShape({ text: q.get('text') });
+if (q.get('plane')) sky.flyPlane({ from: [0, 0.7], to: [1, 0.75] });
 sky._step(seconds);
 const webUrl = sky.snapshot();
 

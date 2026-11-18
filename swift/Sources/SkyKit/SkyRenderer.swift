@@ -102,6 +102,7 @@ public final class SkyRenderer {
     }
 
     private func optionsChanged(from old: SkyOptions) {
+        if old.direction != options.direction { shape = nil; pendingShape = nil }   // a placed shape belongs to the old drift
         if old.cloudScale != options.cloudScale || old.quality != options.quality { needsSetup = true }
         else if old.coverage != options.coverage || old.shadow != options.shadow || old.seed != options.seed
                     || old.direction != options.direction || old.palette != options.palette || old.colors != options.colors { needsRebuild = true }
@@ -219,14 +220,16 @@ public final class SkyRenderer {
         rp.colorAttachments[0].storeAction = .store
         guard let enc = cb.makeRenderCommandEncoder(descriptor: rp) else { return }
         enc.setRenderPipelineState(pipeline)
+        // offsets of the view inside each snapshot, subtracted here in double precision (stays exact on long runs)
         func win(_ l: Layer) -> SIMD4<Float> {
-            SIMD4(Float(l.snaps[0].x0), Float(l.snaps[1].x0), Float(winW), Float(min(1, max(0, (simTime - l.snaps[0].time) / Self.dt))))
+            let scroll = dir * l.def.speed * simTime
+            return SIMD4(Float(scroll - l.snaps[0].x0), Float(scroll - l.snaps[1].x0), Float(winW),
+                         Float(min(1, max(0, (simTime - l.snaps[0].time) / Self.dt))))
         }
         var p = CompositeParams(
             a: SIMD4(Float(width), Float(height), Float(unit), Float(viewH)),
             far: win(layers[0]), near: win(layers[1]),
-            scroll: SIMD4(Float(dir * layers[0].def.speed * simTime), Float(dir * layers[1].def.speed * simTime),
-                          Float(layers[0].def.push), Float(layers[1].def.push)),
+            scroll: SIMD4(0, 0, Float(layers[0].def.push), Float(layers[1].def.push)),
             sky: gpuColors())
         var extra = extraParams(now: CACurrentMediaTime())
         enc.setFragmentBytes(&p, length: MemoryLayout<CompositeParams>.stride, index: 0)

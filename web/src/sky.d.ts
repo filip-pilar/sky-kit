@@ -72,6 +72,8 @@ export interface Sky {
 }
 
 export declare const SKY_DEFAULTS: Required<SkyOptions>;
+/** Drops keys whose value is undefined. */
+export declare function cleanOptions(options?: SkyOptions): SkyOptions;
 export declare const PALETTES: Record<Palette, { skyTop: string; skyMid: string; skyLow: string }>;
 /** One cloud unit in pixels for a w×h view. */
 export declare function cloudUnit(w: number, h: number, cloudScale?: number): number;

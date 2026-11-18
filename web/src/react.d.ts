@@ -9,6 +9,8 @@ export interface SkyHandle {
   play(): void;
   snapshot(): string | null;
   readonly canvas: HTMLCanvasElement | null;
+  /** Current options of the sky (null before mount). */
+  readonly options: Required<SkyOptions> | null;
 }
 
 export interface SkyProps extends SkyOptions {

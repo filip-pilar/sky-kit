@@ -11,7 +11,7 @@
  * Any option from SKY_DEFAULTS can be passed as a prop and changed live.
  */
 import { createElement, forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
-import { createSky } from './sky.js';
+import { createSky, cleanOptions, SKY_DEFAULTS } from './sky.js';
 
 const FILL = { position: 'absolute', inset: 0 };
 
@@ -26,8 +26,9 @@ export const Sky = forwardRef(function Sky({ className, style, children, ...opti
     return () => { skyRef.current.destroy(); skyRef.current = null; };
   }, []);
 
+  // Send the full option set each time, so a removed prop goes back to its default.
   const key = JSON.stringify(options);
-  useEffect(() => { skyRef.current?.set(optsRef.current); }, [key]);
+  useEffect(() => { skyRef.current?.set({ ...SKY_DEFAULTS, ...cleanOptions(optsRef.current) }); }, [key]);
 
   useImperativeHandle(ref, () => ({
     flyPlane: o => skyRef.current?.flyPlane(o),
@@ -37,6 +38,7 @@ export const Sky = forwardRef(function Sky({ className, style, children, ...opti
     play: () => skyRef.current?.play(),
     snapshot: () => skyRef.current?.snapshot() ?? null,
     get canvas() { return skyRef.current?.canvas ?? null; },
+    get options() { return skyRef.current?.options ?? null; },
   }), []);
 
   return createElement('div', { className, style: { position: 'relative', overflow: 'hidden', ...style } },

@@ -127,15 +127,16 @@ fragment float4 sky_cloud(VOut in [[stage_in]], constant CloudParams& P [[buffer
     return float4(min(c, float3(1.0)) * alpha, alpha);
 }
 
-// a = (width, height, unit, viewH)   far/near = (window start A, window start B, window width, fade)
-// scroll = (far, near, push far, push near)
+// a = (width, height, unit, viewH)
+// far/near = (scroll - start of A, scroll - start of B, window width, fade); offsets computed on the CPU in double precision
+// scroll = (unused, unused, push far, push near)
 struct CompositeParams { float4 a; float4 far; float4 near; float4 scroll; SkyColors sky; };
 
 // gust[i] = view-relative (x, y, dx, dy) in cloud units; plane[i] = (start x, start y, dir x, dir y)
 // info = (gust count, plane A age, plane B age, plane speed)   info2 = (trail life, trail drift, 0, 0)
 struct ExtraParams { float4 gust[12]; float4 plane[2]; float4 info; float4 info2; };
 
-static float2 gustAt(float2 p, constant ExtraParams& E) {
+static float2 gustAt(float2 p, float viewH, constant ExtraParams& E) {
     float2 d = float2(0.0);
     int n = int(E.info.x);
     for (int i = 0; i < 12; i++) {
@@ -143,7 +144,9 @@ static float2 gustAt(float2 p, constant ExtraParams& E) {
         float2 r = p - E.gust[i].xy;
         d += E.gust[i].zw * exp(-dot(r, r) / 0.02);
     }
-    return d;
+    float len = length(d);
+    if (len > 0.15) d *= 0.15 / len;                                          // stays well inside the 0.3 side margin
+    return d * smoothstep(0.0, 0.18, p.y) * smoothstep(0.0, 0.18, viewH - p.y);   // no sampling past the top/bottom
 }
 static float vnoise(float x) {
     float i = floor(x), f = fract(x);
@@ -175,12 +178,11 @@ static float contrails(float2 p, constant ExtraParams& E, thread float& planeDot
     return tr;
 }
 
-static float4 layerAt(texture2d<float> A, texture2d<float> B, float4 w, float scroll, float2 p, float viewH) {
+static float4 layerAt(texture2d<float> A, texture2d<float> B, float4 w, float2 p, float viewH) {
     constexpr sampler s(filter::linear, address::clamp_to_edge);
-    float cx = p.x + scroll;
     float vy = 1.0 - p.y / viewH;
-    float4 a = A.sample(s, float2((cx - w.x) / w.z, vy));
-    float4 b = B.sample(s, float2((cx - w.y) / w.z, vy));
+    float4 a = A.sample(s, float2((p.x + w.x) / w.z, vy));
+    float4 b = B.sample(s, float2((p.x + w.y) / w.z, vy));
     return mix(a, b, w.w);
 }
 
@@ -193,8 +195,8 @@ fragment float4 sky_composite(VOut in [[stage_in]], constant CompositeParams& P 
     float3 col = skyAt(frag.y / P.a.y, P.sky);
     float sd = length(ph - float2(0.10 * P.a.x / P.a.y, 1.05));
     col += float3(1.0, 0.97, 0.88) * (0.20 * exp(-sd * 2.2) + 0.22 * exp(-sd * 9.0));
-    float2 g = E.info.x > 0.0 ? gustAt(p, E) : float2(0.0);
-    float4 far = layerAt(farA, farB, P.far, P.scroll.x, p - g * P.scroll.z, P.a.w);
+    float2 g = E.info.x > 0.0 ? gustAt(p, P.a.w, E) : float2(0.0);
+    float4 far = layerAt(farA, farB, P.far, p - g * P.scroll.z, P.a.w);
     col = col * (1.0 - far.a) + far.rgb;
     if (E.info.y >= 0.0 || E.info.z >= 0.0) {
         float pd;
@@ -202,7 +204,7 @@ fragment float4 sky_composite(VOut in [[stage_in]], constant CompositeParams& P 
         col = mix(col, float3(1.0), clamp(tr, 0.0, 1.0) * 0.85);
         col = mix(col, float3(0.95, 0.97, 1.0), pd * 0.9);
     }
-    float4 near = layerAt(nearA, nearB, P.near, P.scroll.y, p - g * P.scroll.w, P.a.w);
+    float4 near = layerAt(nearA, nearB, P.near, p - g * P.scroll.w, P.a.w);
     col = col * (1.0 - near.a) + near.rgb;
     col += (hash12(frag) - 0.5) / 255.0;
     return float4(col, 1.0);

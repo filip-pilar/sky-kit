@@ -9,16 +9,20 @@ import MetalKit
 @MainActor
 public final class SkyController: ObservableObject {
     weak var renderer: SkyRenderer?
+    var wake: (() -> Void)?
     public init() {}
 
     /// Send a plane across. Points are 0…1 of the view with y = 0 at the bottom; nil = from a random side.
-    public func flyPlane(from: CGPoint? = nil, to: CGPoint? = nil) { renderer?.flyPlane(from: from, to: to) }
+    public func flyPlane(from: CGPoint? = nil, to: CGPoint? = nil) { renderer?.flyPlane(from: from, to: to); wake?() }
     /// Clouds gather into a shape, hold it, then melt back into ordinary clouds. Needs speed > 0.
     public func showShape(_ source: SkyShapeSource, x: Double = 0.5, y: Double = 0.6, size: Double = 0.32,
                           form: Double = 4, hold: Double = 6, fade: Double = 8) {
         renderer?.showShape(source, x: x, y: y, size: size, form: form, hold: hold, fade: fade)
+        wake?()
     }
     public func clearShape() { renderer?.clearShape() }
+    func pointerMoved(to p: CGPoint, in size: CGSize) { renderer?.pointerMoved(to: p, in: size); wake?() }
+    func pointerEnded() { renderer?.pointerEnded() }
     /// The clouds at the current moment as an image, rendered offscreen at any size (planes and shapes not included).
     public func snapshot(width: Int, height: Int, pixelsPerPoint: Double = 2) -> CGImage? {
         guard let r = renderer, let copy = try? SkyRenderer(device: r.device, options: r.options) else { return nil }
@@ -50,13 +54,13 @@ public struct SkyView: View {
                 .onContinuousHover(coordinateSpace: .local) { phase in
                     guard options.interactive else { return }
                     switch phase {
-                    case .active(let p): controller.renderer?.pointerMoved(to: p, in: geo.size)
-                    case .ended: controller.renderer?.pointerEnded()
+                    case .active(let p): controller.pointerMoved(to: p, in: geo.size)
+                    case .ended: controller.pointerEnded()
                     }
                 }
                 .simultaneousGesture(DragGesture(minimumDistance: 0)
-                    .onChanged { v in if options.interactive { controller.renderer?.pointerMoved(to: v.location, in: geo.size) } }
-                    .onEnded { _ in controller.renderer?.pointerEnded() },
+                    .onChanged { v in if options.interactive { controller.pointerMoved(to: v.location, in: geo.size) } }
+                    .onEnded { _ in controller.pointerEnded() },
                     including: options.interactive ? .all : .subviews)
         }
     }
@@ -69,10 +73,44 @@ struct SkyMetalView {
     @MainActor
     final class Coordinator: NSObject, MTKViewDelegate {
         var renderer: SkyRenderer?
+        weak var view: MTKView?
         private var last: CFTimeInterval = 0
+        private var motionObserver: NSObjectProtocol?
+
+        override init() {
+            super.init()
+            #if os(macOS)
+            motionObserver = NSWorkspace.shared.notificationCenter.addObserver(
+                forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.wake() }
+            }
+            #else
+            motionObserver = NotificationCenter.default.addObserver(
+                forName: UIAccessibility.reduceMotionStatusDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.wake() }
+            }
+            #endif
+        }
+        deinit {
+            if let motionObserver {
+                #if os(macOS)
+                NSWorkspace.shared.notificationCenter.removeObserver(motionObserver)
+                #else
+                NotificationCenter.default.removeObserver(motionObserver)
+                #endif
+            }
+        }
+
+        /// Resume drawing after an idle pause.
+        func wake() {
+            guard let view, view.isPaused else { return }
+            last = 0
+            view.isPaused = false
+        }
 
         func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
             renderer?.resize(width: Int(size.width), height: Int(size.height), pixelsPerPoint: Self.scale(of: view))
+            wake()
         }
 
         func draw(in view: MTKView) {
@@ -86,6 +124,7 @@ struct SkyMetalView {
             try? renderer.draw(to: drawable.texture, commandBuffer: cb)
             cb.present(drawable)
             cb.commit()
+            if !renderer.isAnimating { view.isPaused = true }   // nothing moving: stop until something wakes us
         }
 
         static func scale(of view: MTKView) -> Double {
@@ -116,16 +155,22 @@ struct SkyMetalView {
         view.isPaused = false
         view.delegate = context.coordinator
         let renderer = try? SkyRenderer(device: view.device, options: options)
-        context.coordinator.renderer = renderer
+        let coordinator = context.coordinator
+        coordinator.renderer = renderer
+        coordinator.view = view
         controller.renderer = renderer
+        controller.wake = { [weak coordinator] in coordinator?.wake() }
         return view
     }
 
     @MainActor
     func update(_ view: MTKView, context: Context) {
-        context.coordinator.renderer?.options = options
-        controller.renderer = context.coordinator.renderer
+        let coordinator = context.coordinator
+        if coordinator.renderer?.options != options { coordinator.renderer?.options = options }
+        controller.renderer = coordinator.renderer
+        controller.wake = { [weak coordinator] in coordinator?.wake() }
         view.preferredFramesPerSecond = options.fps
+        coordinator.wake()
     }
 }
 

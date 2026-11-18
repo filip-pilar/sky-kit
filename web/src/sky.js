@@ -167,8 +167,7 @@ precision highp float;
 uniform vec2 uRes;
 uniform float uUnit, uViewH;
 uniform sampler2D uFarA, uFarB, uNearA, uNearB;
-uniform vec4 uFar, uNear;      // (window start A, window start B, window width, fade)
-uniform vec2 uScroll;
+uniform vec4 uFar, uNear;      // (scroll - start of A, scroll - start of B, window width, fade); offsets computed on the CPU in double precision
 uniform vec2 uPush;            // how strongly the pointer pushes the far / near layer
 uniform vec4 uGust[${MAX_GUSTS}];  // view-relative x, y and displacement dx, dy (cloud units)
 uniform int uGustN;
@@ -177,11 +176,10 @@ uniform vec2 uPlaneAge;        // seconds since launch, < 0 = none
 uniform float uPlaneSpeed, uTrailLife, uTrailDrift;
 out vec4 outColor;
 ${COMMON}
-vec4 layerAt(sampler2D A, sampler2D B, vec4 w, float scroll, vec2 p){
-  float cx = p.x + scroll;
+vec4 layerAt(sampler2D A, sampler2D B, vec4 w, vec2 p){
   float vy = p.y / uViewH;
-  vec4 a = texture(A, vec2((cx - w.x) / w.z, vy));
-  vec4 b = texture(B, vec2((cx - w.y) / w.z, vy));
+  vec4 a = texture(A, vec2((p.x + w.x) / w.z, vy));
+  vec4 b = texture(B, vec2((p.x + w.y) / w.z, vy));
   return mix(a, b, w.w);
 }
 vec2 gust(vec2 p){
@@ -191,7 +189,9 @@ vec2 gust(vec2 p){
     vec2 r = p - uGust[i].xy;
     d += uGust[i].zw * exp(-dot(r, r) / 0.02);
   }
-  return d;
+  float len = length(d);
+  if (len > 0.15) d *= 0.15 / len;                                        // stays well inside the 0.3 side margin
+  return d * smoothstep(0.0, 0.18, p.y) * smoothstep(0.0, 0.18, uViewH - p.y);   // no sampling past the top/bottom
 }
 float vnoise(float x){
   float i = floor(x), f = fract(x);
@@ -228,7 +228,7 @@ void main(){
   float sd = length(ph - vec2(0.10 * uRes.x / uRes.y, 1.05));
   col += vec3(1.0, 0.97, 0.88) * (0.20 * exp(-sd * 2.2) + 0.22 * exp(-sd * 9.0));
   vec2 g = uGustN > 0 ? gust(p) : vec2(0.0);
-  vec4 far = layerAt(uFarA, uFarB, uFar, uScroll.x, p - g * uPush.x);
+  vec4 far = layerAt(uFarA, uFarB, uFar, p - g * uPush.x);
   col = col * (1.0 - far.a) + far.rgb;
   if (uPlaneAge.x >= 0.0 || uPlaneAge.y >= 0.0){
     float pd;
@@ -236,7 +236,7 @@ void main(){
     col = mix(col, vec3(1.0), clamp(tr, 0.0, 1.0) * 0.85);
     col = mix(col, vec3(0.95, 0.97, 1.0), pd * 0.9);
   }
-  vec4 near = layerAt(uNearA, uNearB, uNear, uScroll.y, p - g * uPush.y);
+  vec4 near = layerAt(uNearA, uNearB, uNear, p - g * uPush.y);
   col = col * (1.0 - near.a) + near.rgb;
   col += (hash12(gl_FragCoord.xy) - 0.5) / 255.0;
   outColor = vec4(col, 1.0);
@@ -290,12 +290,20 @@ function blurAlpha(alpha, w, h, radius) {
   return a;
 }
 
+/** Drop keys whose value is undefined, so `{ speed: undefined }` means "default", not "broken". */
+export function cleanOptions(o = {}) {
+  return Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined));
+}
+
 export function createSky(container, options = {}) {
-  const S = { ...SKY_DEFAULTS, ...options };
+  const S = { ...SKY_DEFAULTS, ...cleanOptions(options) };
   const canvas = document.createElement('canvas');
-  canvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;display:block;pointer-events:none';
+  // z-index -1 inside an isolated container: the sky sits behind any content placed in the container
+  canvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;display:block;pointer-events:none;z-index:-1';
   canvas.setAttribute('aria-hidden', 'true');
+  const savedStyle = { position: container.style.position, isolation: container.style.isolation };
   if (getComputedStyle(container).position === 'static') container.style.position = 'relative';
+  container.style.isolation = 'isolate';
   container.insertBefore(canvas, container.firstChild);
 
   let gl = null, cloudProg = null, compProg = null, emptyTex = null, shapeTex = null;
@@ -554,9 +562,12 @@ export function createSky(container, options = {}) {
     const [F, N] = layers;
     bind(0, 'uFarA', F.snaps[0].tex); bind(1, 'uFarB', F.snaps[1].tex);
     bind(2, 'uNearA', N.snaps[0].tex); bind(3, 'uNearB', N.snaps[1].tex);
-    const win = L => [L.snaps[0].x0, L.snaps[1].x0, winW, Math.min(1, Math.max(0, (simTime - L.snaps[0].time) / DT))];
+    // offsets of the view inside each snapshot, subtracted here in double precision (stays exact on long runs)
+    const win = L => {
+      const scroll = dir() * L.speed * simTime;
+      return [scroll - L.snaps[0].x0, scroll - L.snaps[1].x0, winW, Math.min(1, Math.max(0, (simTime - L.snaps[0].time) / DT))];
+    };
     gl.uniform4fv(u.uFar, win(F)); gl.uniform4fv(u.uNear, win(N));
-    gl.uniform2f(u.uScroll, dir() * F.speed * simTime, dir() * N.speed * simTime);
     gl.uniform2f(u.uPush, F.push, N.push);
     gl.uniform4fv(u.uGust, gustUniforms(now)); gl.uniform1i(u.uGustN, gusts.length);
     const pv = new Float32Array(8), pa = [-1, -1];
@@ -577,6 +588,15 @@ export function createSky(container, options = {}) {
   document.addEventListener('visibilitychange', onVis);
   const onMotionPref = () => redraw();
   reduceMotion?.addEventListener?.('change', onMotionPref);
+  // moving the window to a screen with a different pixel density doesn't resize the container: watch for it
+  let dprQuery = null;
+  function onDpr() { redraw(); watchDpr(); }
+  function watchDpr() {
+    dprQuery?.removeEventListener('change', onDpr);
+    dprQuery = window.matchMedia ? matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`) : null;
+    dprQuery?.addEventListener?.('change', onDpr);
+  }
+  watchDpr();
   canvas.addEventListener('webglcontextlost', e => { e.preventDefault(); lost = true; if (raf) cancelAnimationFrame(raf); raf = 0; });
   canvas.addEventListener('webglcontextrestored', () => { lost = false; initGL(); redraw(); });
 
@@ -589,8 +609,10 @@ export function createSky(container, options = {}) {
     canvas,
     get options() { return { ...S }; },
     set(o) {
+      o = cleanOptions(o);
       const resetup = RESETUP_KEYS.some(k => k in o && o[k] !== S[k]);
       const rebuild = REBUILD_KEYS.some(k => k in o && o[k] !== S[k]);
+      if ('direction' in o && o.direction !== S.direction) shape = null;   // a placed shape belongs to the old drift
       Object.assign(S, o);
       if (resetup) needsSetup = true;
       else if (rebuild && layers[0]?.snaps) needsRebuild = true;
@@ -637,8 +659,11 @@ export function createSky(container, options = {}) {
       reduceMotion?.removeEventListener?.('change', onMotionPref);
       container.removeEventListener('pointermove', onPointerMove);
       container.removeEventListener('pointerleave', onPointerLeave);
+      dprQuery?.removeEventListener('change', onDpr);
       gl?.getExtension('WEBGL_lose_context')?.loseContext();
       canvas.remove();
+      container.style.position = savedStyle.position;
+      container.style.isolation = savedStyle.isolation;
     },
   };
 }
