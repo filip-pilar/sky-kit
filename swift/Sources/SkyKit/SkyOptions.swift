@@ -45,7 +45,7 @@ public struct SkyOptions: Equatable, Sendable {
     var resolvedColors: SkyColors { colors ?? SkyColors.palette(palette) }
 }
 
-/// Sky gradient colours, top to horizon, as linear 0…1 RGB (same values the web version uses).
+/// Sky gradient colours, top to horizon, as sRGB 0…1 (same values the web version uses).
 public struct SkyColors: Equatable, Sendable {
     public var top: SIMD3<Float>
     public var mid: SIMD3<Float>
@@ -54,7 +54,7 @@ public struct SkyColors: Equatable, Sendable {
     public init(top: SIMD3<Float>, mid: SIMD3<Float>, low: SIMD3<Float>) {
         self.top = top; self.mid = mid; self.low = low
     }
-    /// Colours from hex strings like "#2a7be4".
+    /// Colours from hex strings like "#2a7be4" (or "2a7be4", "#28e").
     public init(top: String, mid: String, low: String) {
         self.init(top: .init(hex: top), mid: .init(hex: mid), low: .init(hex: low))
     }
@@ -70,7 +70,8 @@ public struct SkyColors: Equatable, Sendable {
 
 extension SIMD3 where Scalar == Float {
     init(hex: String) {
-        let s = hex.hasPrefix("#") ? String(hex.dropFirst()) : hex
+        var s = hex.hasPrefix("#") ? String(hex.dropFirst()) : hex
+        if s.count == 3 { s = s.map { "\($0)\($0)" }.joined() }
         let v = UInt32(s, radix: 16) ?? 0
         self.init(Float((v >> 16) & 0xff) / 255, Float((v >> 8) & 0xff) / 255, Float(v & 0xff) / 255)
     }

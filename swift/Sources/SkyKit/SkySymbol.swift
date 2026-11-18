@@ -47,8 +47,7 @@ public enum SkySymbol: String, CaseIterable, Sendable {
                 fill ? ctx.fillEllipse(in: rect) : ctx.strokeEllipse(in: rect)
             case let .ellipse(cx, cy, rx, ry, deg):
                 var t = CGAffineTransform(translationX: cx, y: cy).rotated(by: deg * .pi / 180)
-                guard let e = CGPath(ellipseIn: CGRect(x: -rx, y: -ry, width: 2 * rx, height: 2 * ry), transform: &t) as CGPath? else { continue }
-                ctx.addPath(e); ctx.fillPath()
+                ctx.addPath(CGPath(ellipseIn: CGRect(x: -rx, y: -ry, width: 2 * rx, height: 2 * ry), transform: &t)); ctx.fillPath()
             }
         }
         return ctx.makeImage()
@@ -83,18 +82,4 @@ public enum SkySymbol: String, CaseIterable, Sendable {
         }
         return p
     }
-}
-
-/// What the shapes are doing (SkyRenderer.shapeState / SkyController.shapeState).
-public struct SkyShapeState: Equatable, Sendable {
-    public enum Phase: String, Sendable { case none, waiting, forming, holding, melting }
-    /// none; waiting (queued, or its pause before forming); forming; holding; melting.
-    public var phase: Phase
-    /// The text or symbol on screen ("image" for an image).
-    public var label: String?
-    /// The labels of the shapes queued after it.
-    public var next: [String]
-    public init(phase: Phase, label: String?, next: [String]) { self.phase = phase; self.label = label; self.next = next }
-    /// Nothing showing or queued.
-    public static let idle = SkyShapeState(phase: .none, label: nil, next: [])
 }

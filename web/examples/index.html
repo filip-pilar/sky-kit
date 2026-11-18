@@ -64,7 +64,6 @@ document.getElementById('seedBtn').onclick = () => hero.set({ seed: Math.floor(M
 let paused = false;
 document.getElementById('pauseBtn').onclick = e => { paused = !paused; paused ? hero.pause() : hero.play(); e.target.textContent = paused ? 'Play' : 'Pause'; };
 document.getElementById('pngBtn').onclick = () => { const url = hero.snapshot(); if (!url) return; const a = document.createElement('a'); a.href = url; a.download = 'sky.png'; a.click(); };
-window.hero = hero;
 </script>
 </body>
 </html>

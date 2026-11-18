@@ -8,6 +8,7 @@
   html,body{margin:0;height:100%;overflow:hidden;font:13px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
   #sky{position:fixed;inset:0}
   #panel{position:fixed;top:12px;right:12px;z-index:5;width:240px;background:rgba(14,34,70,.72);color:#eef4ff;backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-radius:12px;padding:10px 12px;font-size:12px}
+  #panel{max-height:calc(100vh - 24px);overflow:auto;box-sizing:border-box}
   #panel.hidden{display:none}
   .r{display:grid;grid-template-columns:1fr auto;margin:5px 0}
   .r input[type=range],.r select{grid-column:1/3;width:100%;margin:0}
@@ -19,8 +20,12 @@
   .file input{display:block;width:100%;margin-top:4px;font:inherit;color:inherit}
   .head{display:flex;justify-content:space-between;align-items:center}
   .head button{margin:0;padding:2px 8px}
+  #symbols{display:grid;grid-template-columns:repeat(8,1fr);gap:4px;margin-top:6px}
+  #symbols button{margin:0;padding:4px 0;display:grid;place-items:center}
+  #symbols svg{width:16px;height:16px}
+  #state{margin-top:6px;min-height:1.4em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   #show{position:fixed;top:12px;right:12px;z-index:5;display:none}
-  @media (max-width:520px){#panel{left:12px;width:auto;max-height:70vh;overflow:auto}}
+  @media (max-width:520px){#panel{left:12px;width:auto;max-height:70vh}}
 </style>
 </head>
 <body>
@@ -36,16 +41,25 @@
   <label class="chk"><input type="checkbox" id="planes" checked> Planes fly by</label>
   <button id="planeBtn">Fly a plane now</button>
   <div class="sec">Shapes</div>
-  <input type="text" id="shapeText" value="hello" aria-label="Shape text">
-  <button id="textBtn">Form text</button><button id="heartBtn">Form a heart</button>
+  <input type="text" id="shapeText" value="hello, sky" aria-label="Words to form, separated by commas">
+  <button id="textBtn">Form</button><button id="stopBtn">Stop</button>
+  <label class="chk"><input type="checkbox" id="loop"> Loop the words</label>
+  <div id="symbols" role="group" aria-label="Symbols"></div>
+  <div id="state" aria-live="polite"></div>
+  <div class="r"><label>Form (s)</label><output id="o-form"></output><input id="form" type="range" min="1" max="15" step="0.5" value="5"></div>
+  <div class="r"><label>Hold (s)</label><output id="o-hold"></output><input id="hold" type="range" min="0" max="21" step="0.5" value="5"></div>
+  <div class="r"><label>Melt (s)</label><output id="o-fade"></output><input id="fade" type="range" min="1" max="15" step="0.5" value="7"></div>
+  <div class="r"><label>Pause between words (s)</label><output id="o-pause"></output><input id="pause" type="range" min="0" max="5" step="0.5" value="1"></div>
+  <div class="r"><label>Density</label><output id="o-density"></output><input id="density" type="range" min="0" max="1" step="0.05" value="0.5"></div>
+  <div class="r"><label>Size</label><output id="o-size"></output><input id="size" type="range" min="0.15" max="0.5" step="0.01" value="0.32"></div>
   <label class="file" style="display:block;margin-top:6px">Image / SVG silhouette <input type="file" id="file" accept="image/*"></label>
-  <div class="hint">H hides this panel</div>
+  <div class="hint">Commas chain words; pause 0 morphs one straight into the next; hold ∞ keeps it until Stop. H hides this panel.</div>
 </div>
 <button id="show">Controls</button>
 <script type="module">
-import { createSky } from '../src/sky.js';
+import { createSky, SKY_SYMBOLS, skySymbolSvg } from '../src/sky.js';
 const sky = createSky(document.getElementById('sky'), { planes: true });
-window.sky = sky;
+window.sky = sky;   // for trying things in the console
 
 for (const k of ['speed', 'coverage', 'shadow', 'cloudScale', 'gradient']) {
   const inp = document.getElementById(k), out = document.getElementById('o-' + k);
@@ -55,10 +69,37 @@ for (const k of ['speed', 'coverage', 'shadow', 'cloudScale', 'gradient']) {
 document.getElementById('palette').onchange = e => sky.set({ palette: e.target.value });
 for (const k of ['planes']) document.getElementById(k).onchange = e => sky.set({ [k]: e.target.checked });
 document.getElementById('planeBtn').onclick = () => sky.flyPlane();
-document.getElementById('textBtn').onclick = () => sky.showShape({ text: document.getElementById('shapeText').value || '☁' });
-const HEART = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 92"><path d="M50 90C20 66 2 48 2 28 2 13 14 2 28 2c10 0 18 6 22 14C54 8 62 2 72 2c14 0 26 11 26 26 0 20-18 38-48 62z" fill="#000"/></svg>');
-document.getElementById('heartBtn').onclick = () => sky.showShape({ image: HEART, size: 0.38 });
-document.getElementById('file').onchange = e => { const f = e.target.files[0]; if (f) sky.showShape({ image: URL.createObjectURL(f), size: 0.38 }); };
+// shapes: the timing, pause, density and size sliders apply to the next shape; Hold's last step means "until Stop"
+const $ = id => document.getElementById(id), num = id => +$(id).value, FOREVER = 21;
+const fmt = { form: v => v, hold: v => v >= FOREVER ? '∞' : v, fade: v => v, pause: v => v === 0 ? 'morph' : v, density: v => v.toFixed(2), size: v => v.toFixed(2) };
+for (const [k, f] of Object.entries(fmt)) { const show = () => { $('o-' + k).textContent = f(num(k)); }; $(k).addEventListener('input', show); show(); }
+const settings = () => ({ size: num('size'), form: num('form'), hold: num('hold') >= FOREVER ? Infinity : num('hold'), fade: num('fade'), density: num('density') });
+let chain = [];
+const queueWords = (words, first) => words.forEach((text, i) => sky.showShape({ text, ...settings(), queue: !(first && i === 0), pause: num('pause') }));
+$('textBtn').onclick = () => {
+  const words = $('shapeText').value.split(',').map(w => w.trim()).filter(Boolean);
+  chain = words.length ? words : ['☁'];
+  queueWords(chain, true);
+};
+$('stopBtn').onclick = () => { chain = []; sky.releaseShape(); };
+for (const name of Object.keys(SKY_SYMBOLS)) {
+  const b = document.createElement('button');
+  b.title = b.ariaLabel = name; b.innerHTML = skySymbolSvg(name);
+  b.onclick = () => { chain = []; sky.showShape({ symbol: name, ...settings(), size: num('size') * 1.2 }); };
+  $('symbols').append(b);
+}
+$('file').onchange = e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  chain = [];
+  const url = URL.createObjectURL(f);
+  sky.showShape({ image: url, ...settings() }).finally(() => URL.revokeObjectURL(url));
+};
+setInterval(() => {
+  const st = sky.shapeState;
+  if ($('loop').checked && chain.length && !st.next.length && ['forming', 'holding', 'melting'].includes(st.phase)) queueWords(chain, false);
+  $('state').textContent = st.phase === 'none' ? '' : st.phase + (st.label ? ' ' + st.label : '') + (st.next.length ? ' · next: ' + st.next.join(', ') : '');
+}, 250);
 const panel = document.getElementById('panel'), show = document.getElementById('show');
 const setHidden = h => { panel.classList.toggle('hidden', h); show.style.display = h ? 'block' : 'none'; };
 document.getElementById('hideBtn').onclick = () => setHidden(true);

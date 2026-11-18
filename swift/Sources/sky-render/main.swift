@@ -1,9 +1,11 @@
 // sky-render: render a still of the sky to a PNG (also used to check parity with the web version).
 //
 //   swift run sky-render --width 1600 --height 1000 --seconds 30 --out sky.png
-//   options: --seed N --coverage 0..1 --shadow 0..1 --palette day|summer|pastel --scale 2 --direction left|right
-//            --text hello | --text one,two (chained) | --heart (start forming a shape at time 0), --plane
-//            --form/--hold/--fade seconds, --density 0..1, --pause seconds between chained words (0 = straight from one to the next)
+//   sky:     --seed N --coverage 0..1 --shadow 0..1 --palette day|summer|pastel --gradient 0..1 --scale 2 --direction left|right
+//   extras:  --plane; a shape formed from time 0: --text hello | --text one,two (chained) | --symbol star | --heart,
+//            at --shape-x 0..1, --size 0..1 (symbols), --form/--hold/--fade seconds, --hold-forever, --density 0..1,
+//            --pause seconds between chained words (0 = straight from one to the next), --release-at seconds
+//   --symbol-sheet out.png draws the built-in symbols side by side
 import Foundation
 import CoreGraphics
 import ImageIO
@@ -15,7 +17,7 @@ var shapeText: String? = nil, plane = false, heart = false, shapeX = 0.5
 var releaseAt: Double? = nil
 var form = 5.0, hold = 5.0, fade = 7.0, density = 0.5, pause = 1.0, symbol: SkySymbol? = nil, size = 0.32, symbolSheet: String? = nil
 
-/// The heart used by the web demos (SVG path, viewBox 100×92), drawn at 220 px tall.
+/// The heart web/examples/parity.html uses (SVG path, viewBox 100×92), drawn at 220 px tall.
 func heartImage() -> CGImage? {
     let h = 220.0, s = h / 92, w = Int((100 * s).rounded())
     guard let ctx = CGContext(data: nil, width: w, height: Int(h), bitsPerComponent: 8, bytesPerRow: w * 4,

@@ -17,6 +17,20 @@ public enum SkyShapeSource {
     case symbol(SkySymbol)
 }
 
+/// What the shapes are doing (SkyRenderer.shapeState / SkyController.shapeState).
+public struct SkyShapeState: Equatable, Sendable {
+    public enum Phase: String, Sendable { case none, waiting, forming, holding, melting }
+    /// none; waiting (queued, or its pause before forming); forming; holding; melting.
+    public var phase: Phase
+    /// The text or symbol on screen ("image" for an image).
+    public var label: String?
+    /// The labels of the shapes queued after it.
+    public var next: [String]
+    public init(phase: Phase, label: String?, next: [String]) { self.phase = phase; self.label = label; self.next = next }
+    /// Nothing showing or queued.
+    public static let idle = SkyShapeState(phase: .none, label: nil, next: [])
+}
+
 /// Silhouette turned into the channels the cloud shader uses (port of buildShapeImage in sky.js):
 /// R = the shape (from the distance to its outline, see edgeChannel), G = a near halo, B = the shape's body
 /// (very wide blur), A = a wide area: how near a point is to the shape (exactly 0 near the image's edge).
@@ -34,24 +48,23 @@ struct ShapeMask {
     /// The silhouette's area in mask pixels.
     let silhouetteArea: Double
 
-    /// Built at 100 px per silhouette height (it is heavily blurred anyway; the radii below are for 220 px,
+    /// Built at 100 px per silhouette height (it is soft anyway; the blur radii below are for 220 px,
     /// scaled by `ms`), like sky.js.
     static func make(_ source: SkyShapeSource, pixelHeight px: Int = 100) -> ShapeMask? {
         let ms = Double(px) / 220
         guard let (sil, sw, sh) = silhouette(source, px: px) else { return nil }
-        let pad = Int((Double(sh) * 2.2).rounded())   // room for the wide area the shape gathers from
+        let pad = Int((Double(sh) * 2.2).rounded())   // room for the wide area (A)
         let w = sw + pad * 2, h = sh + pad * 2
         var alpha = [Float](repeating: 0, count: w * h)
         for y in 0..<sh { for x in 0..<sw { alpha[(y + pad) * w + x + pad] = sil[y * sw + x] } }
         let body = blur(alpha, w, h, radius: 70 * ms, scale: 2)                             // the shape's domed body
-        // thick, solid shapes (a heart, an emoji) get soft cloud edges like the clouds around them;
-        // thin strokes (text) stay crisp enough to read
+        // 0 = thin strokes (text) … 1 = a solid shape (a heart, an emoji): solid shapes get softer edges
         let thick = Double(min(1, max(0, ((body.max() ?? 0) / 255 - 0.6) / 0.3)))
         // the shape itself, from the distance to its edge
         let near = edgeChannel(alpha, w, h, soft: (5.6 + 2.5 * thick) * Double(px) / 100, smooth: 4 * Double(px) / 100)
         let wide = blur(alpha, w, h, radius: 44 * ms, scale: 2)
-        // the wide area: a very wide blur, flattened (square root) so it reaches well out, ~1 at the shape, and faded to exactly 0 over the
-        // outer part of the margin (the patch blends into the ordinary clouds there)
+        // the wide area (A): a very wide blur, flattened (square root) so it reaches well out, ~1 at the shape, and faded to exactly 0
+        // over the outer part of the margin (it times a morph, which must not change at the mask's edge)
         let far = blur(alpha, w, h, radius: Double(sh) * 1.2, scale: 4)
         let farMax = max(1e-3, far.max() ?? 0)
         func win(_ d: Int) -> Float {
@@ -85,16 +98,16 @@ struct ShapeMask {
             var ascent: CGFloat = 0, descent: CGFloat = 0, leading: CGFloat = 0
             let lineW = CTLineGetTypographicBounds(line, &ascent, &descent, &leading)
             let w = max(2, Int(ceil(lineW)) + 2), h = max(2, Int(ceil(CGFloat(px) * 1.15)))
-            guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w,
-                                      space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return nil }
-            ctx.setFillColor(gray: 0, alpha: 1); ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+            // on transparent, so the coverage (alpha) is the shape whatever the colours (emoji too), like the web version
+            guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                                      space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
             ctx.setFillColor(gray: 1, alpha: 1)
             ctx.textPosition = CGPoint(x: 1, y: (CGFloat(h) - (ascent + descent)) / 2 + descent)   // vertically centred baseline
             CTLineDraw(line, ctx)
             guard let data = ctx.data else { return nil }
-            let p = data.bindMemory(to: UInt8.self, capacity: w * h)
+            let p = data.bindMemory(to: UInt8.self, capacity: w * h * 4)
             // CGContext memory is top-down already
-            return ((0..<(w * h)).map { Float(p[$0]) }, w, h)
+            return ((0..<(w * h)).map { Float(p[$0 * 4 + 3]) }, w, h)
         case .symbol(let s):
             guard let img = s.image(height: px * 2) else { return nil }
             return silhouette(.image(img), px: px)

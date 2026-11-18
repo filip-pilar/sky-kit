@@ -62,50 +62,36 @@ static float3 skyAt(float v, constant SkyColors& c) {
 // a = (win0.x, win0.y, unitsPerPixel, viewH)   b = (morph, scale, coverage, shadow)
 // c = (haze, farMask, seed.x, seed.y)           d = (target height in pixels, shape forming 0..1, melting 0..1, thickness)
 // shapeRect = cloud-space (x0, y0, width, height) of the shape image
-// srcRect = cloud-space (x0, y0, width, height) of the map of the cloud the shape is made from; e = (density, 0, 0, 0)
+// srcRect = cloud-space (x0, y0, width, height) of the map of the cloud the shape is made from
 // e = (density, 1 = turning straight from the previous shape, its thickness, 0); prevRect = cloud-space rect of its mask
 struct CloudParams { float4 a; float4 b; float4 c; float4 d; float4 shapeRect; SkyColors sky; float4 srcRect; float4 e; float4 prevRect; };
 
-// ---- shapes (the mask texture has top-down rows, so it is sampled at 1 - y)
-// A shape is part of the same cloud field: while it is on screen the near clouds over its wide area
-// are rendered live every frame, and the shape only changes the density before it is turned into
-// cloud and shaded. Forming: a front sweeps in from the edge of the wide area; cloud piles up ahead
-// of it into a bank and the sky behind it empties (that cloud went into the shape), so the cloud
-// gathers from all around and ends as the shape, which condenses puff by puff. Melting: the shape
-// swells out into a broad soft mass that thins away while the clouds around it come back.
-// d.y = forming progress (stays 1 while holding and melting), d.z = melting progress, d.w = thickness
-// (0 = thin strokes like text, 1 = a solid shape like a heart).
-static float4 maskAt(float2 su, texture2d<float> shape) {
-    constexpr sampler s(filter::linear, address::clamp_to_edge);
-    return shape.sample(s, float2(su.x, 1.0 - su.y));
-}
-// R = the shape (softened), G = near halo, B = very wide blur (the shape's body),
-// A = the wide area the shape gathers from and dissolves into (0 at the image's edge)
+// ---- shapes: a shape only changes the near clouds' density before it is turned into cloud and shaded,
+// so it is lit and textured like the clouds around it. d.y = forming progress (stays 1 while holding and
+// melting), d.z = melting progress, d.w = thickness (0 = thin strokes like text, 1 = a solid shape like a heart).
+// The mask: R = the shape (from the distance to its outline), G = near halo, B = very wide blur (the shape's
+// body), A = how near the shape is (0 at the image's edge); its rows are top-down, so it is sampled at 1 - y.
 static float4 shapeAt(float2 p, constant CloudParams& P, texture2d<float> shape) {
     float2 su = (p - P.shapeRect.xy) / P.shapeRect.zw;
     if (su.x < 0.0 || su.y < 0.0 || su.x > 1.0 || su.y > 1.0) return float4(0.0);
     constexpr sampler s(filter::linear, address::clamp_to_edge);
     return shape.sample(s, float2(su.x, 1.0 - su.y));
 }
-// the cloud the shape is made from: 1 on it (its map has bottom-up rows), so only that cloud gives way
-static float4 prevAt(float2 p, constant CloudParams& P, texture2d<float> prev) {   // the previous shape's mask (same layout)
+// the previous shape's mask (same layout)
+static float4 prevAt(float2 p, constant CloudParams& P, texture2d<float> prev) {
     float2 su = (p - P.prevRect.xy) / P.prevRect.zw;
     if (su.x < 0.0 || su.y < 0.0 || su.x > 1.0 || su.y > 1.0) return float4(0.0);
     constexpr sampler s(filter::linear, address::clamp_to_edge);
     return prev.sample(s, float2(su.x, 1.0 - su.y));
 }
+// the cloud the shape is made from: 1 on it (its map has bottom-up rows), so only that cloud gives way
 static float srcAt(float2 p, constant CloudParams& P, texture2d<float> src) {
     float2 su = (p - P.srcRect.xy) / P.srcRect.zw;
     if (su.x < 0.0 || su.y < 0.0 || su.x > 1.0 || su.y > 1.0) return 0.0;
     constexpr sampler s(filter::linear, address::clamp_to_edge);
     return src.sample(s, su).r;
 }
-static float smax(float a, float b, float k) { float h = clamp(0.5 + 0.5 * (a - b) / k, 0.0, 1.0); return mix(b, a, h) + k * h * (1.0 - h); }
-static float smin(float a, float b, float k) { return -smax(-a, -b, k); }
-static float2 gatherFrom(float2 p, constant CloudParams& P, texture2d<float> shape, thread float2& toward) { toward = float2(0.0); return p; }   // (shapes no longer pull clouds in)
-// the density of a shape's own cloud: its outline wobbles at puff scale (stroke width varies like a lumpy
-// cloud); bumps about a letter-stroke wide; solid shapes (t near 1) also get a domed body (densest in the
-// middle, so it shades round, from body) and cauliflower lumps that shape the outline
+// the density of a shape's own cloud at R (its silhouette), body (its wide blur) and thickness t
 static float shapeFill(float R, float body, float t, float thr, float v, float bil, float lumps, float big, float small, float density) {
     if (R <= 0.001) return thr - 0.3;
     // how far above the cloud threshold: the outline, then (solid shapes) a low dome broken up inside into lumps
@@ -130,7 +116,7 @@ static float shapeFill(float R, float body, float t, float thr, float v, float b
 // (and keeps drifting and changing like the others). Other clouds are left alone. When it follows another
 // shape directly (e.y = 1), it is there from the start and that shape's outline turns into its own,
 // puff by puff. own: how much of the density here is the shape's; shR: the shape's silhouette here.
-static float withShape(float v, float2 p, float thr, float bil, float2 so, bool lite, constant CloudParams& P, texture2d<float> shape,
+static float withShape(float v, float2 p, float thr, float bil, bool lite, constant CloudParams& P, texture2d<float> shape,
                        texture2d<float> srcMap, texture2d<float> prev, thread float& own, thread float& shR) {
     own = 0.0; shR = 0.0;
     if (P.d.y <= 0.0) return v;
@@ -151,7 +137,7 @@ static float withShape(float v, float2 p, float thr, float bil, float2 so, bool 
     float R = 0.0, fill = thr - 0.3;
     shR = mix(mp.x, m.x, K);
     if (m.y > 0.0 || mp.y > 0.0) {
-      // (the outline wobbles by a few mask pixels, so the wobble scales with the shape and can't tear its small parts)
+      // the outline wobbles at puff scale by a few mask pixels (so it scales with the shape and can't tear small parts)
       float2 wob = lite ? float2(0.0) : float2(fbm(p * 6.5 + float2(2.3, 8.9), 2), fbm(p * 6.5 + float2(7.7, 1.3), 2))
                                         * (P.shapeRect.w / float(shape.get_height())) * mix(4.5, 6.5, t);
       float4 ms = shapeAt(p + wob, P, shape), mps = K < 1.0 ? prevAt(p + wob, P, prev) : float4(0.0);
@@ -172,14 +158,14 @@ static float withShape(float v, float2 p, float thr, float bil, float2 so, bool 
     return mix(v, mix(max(v, fill), fill, src), w);
 }
 
-static float4 cumulus(float2 p, float2 pg, float2 so, float scale, float2 seed, float cov, float morph, constant CloudParams& P, texture2d<float> shape, texture2d<float> srcMap, texture2d<float> prev) {
-    float2 q = pg * float2(2.2, 3.4) / scale + seed;
+static float4 cumulus(float2 p, float scale, float2 seed, float cov, float morph, constant CloudParams& P, texture2d<float> shape, texture2d<float> srcMap, texture2d<float> prev) {
+    float2 q = p * float2(2.2, 3.4) / scale + seed;
     float2 w = float2(fbm(q * 0.5 + morph, 3), fbm(q * 0.5 + 5.2 - morph, 3));
     float base = fbm(q * 0.7 + w * 0.6, 4);
     float bil = billow(q * 2.0 + w, 3);
     float thr = mix(0.22, -0.12, cov);
     float own, shR;
-    float v = withShape(base + 0.15 * (bil - 0.35), p, thr, bil, so, false, P, shape, srcMap, prev, own, shR);
+    float v = withShape(base + 0.15 * (bil - 0.35), p, thr, bil, false, P, shape, srcMap, prev, own, shR);
     // a shape's rim fades out slowly like other clouds' edges (more for solid shapes); the outline stays put
     float rim = own * (1.0 - 0.6 * smoothstep(0.35, 0.8, shR)) * mix(0.6, 1.0, P.d.w) * (P.e.y > 0.0 ? 1.0 : smoothstep(0.0, 0.5, P.d.y)) * (1.0 - smoothstep(0.2, 0.6, P.d.z));
     float D = smoothstep(thr, thr + 0.22 + 0.55 * rim, v);
@@ -187,12 +173,12 @@ static float4 cumulus(float2 p, float2 pg, float2 so, float scale, float2 seed, 
     float inShape = shR * own * (1.0 - P.d.w);                        // softer fine texture inside thin shapes (text)
     return float4(D, (0.05 * dome + 0.012 * D * bil * (1.0 - 0.5 * inShape)) * scale, own, shR);
 }
-static float cumulusLite(float2 p, float2 pg, float2 so, float scale, float2 seed, float cov, float morph, constant CloudParams& P, texture2d<float> shape, texture2d<float> srcMap, texture2d<float> prev) {
-    float2 q = pg * float2(2.2, 3.4) / scale + seed;
+static float cumulusLite(float2 p, float scale, float2 seed, float cov, float morph, constant CloudParams& P, texture2d<float> shape, texture2d<float> srcMap, texture2d<float> prev) {
+    float2 q = p * float2(2.2, 3.4) / scale + seed;
     float2 w = float2(fbm(q * 0.5 + morph, 2), fbm(q * 0.5 + 5.2 - morph, 2));
     float thr = mix(0.22, -0.12, cov);
     float own, shR;
-    float v = withShape(fbm(q * 0.7 + w * 0.6, 3), p, thr, 0.35, so, true, P, shape, srcMap, prev, own, shR);
+    float v = withShape(fbm(q * 0.7 + w * 0.6, 3), p, thr, 0.35, true, P, shape, srcMap, prev, own, shR);
     return smoothstep(thr, thr + 0.22, v);
 }
 
@@ -208,10 +194,7 @@ fragment float4 sky_cloud(VOut in [[stage_in]], constant CloudParams& P [[buffer
     float scale = P.b.y;
     float2 seed = P.c.zw;
     float cov = P.b.z * mix(1.0, 0.75 + 0.35 * (1.0 - smoothstep(0.1, 0.8, vv)), P.c.y);   // edges in order: reversed edges are undefined
-    float2 toward;
-    float2 pg = gatherFrom(p, P, shape, toward), dg = pg - p;         // same nudge for the shadow samples
-    float2 so = toward * mix(0.07, 0.13, P.d.w) * smoothstep(0.1, 0.8, P.d.z);   // melting: its pieces drift outward
-    float4 D0 = cumulus(p, pg, so, scale, seed, cov, P.b.x, P, shape, srcMap, prev);
+    float4 D0 = cumulus(p, scale, seed, cov, P.b.x, P, shape, srcMap, prev);
     float alpha = smoothstep(0.0, 0.61, D0.x);
     float2 grad = float2(dfdx(D0.y), -dfdy(D0.y)) / upp;
     if (alpha < 0.002) return float4(0.0);
@@ -223,7 +206,7 @@ fragment float4 sky_cloud(VOut in [[stage_in]], constant CloudParams& P [[buffer
     s = mix(s, (floor(f) + smoothstep(0.4, 0.6, fract(f))) / 2.0, 0.3);
     float3 c = mix(SHADE, LIT, s);
     float occ = 0.0;
-    for (int i = 1; i <= 4; i++) { float2 ps = p + L2 * 0.028 * float(i) * scale; occ += cumulusLite(ps, ps + dg, so, scale, seed, cov, P.b.x, P, shape, srcMap, prev); }
+    for (int i = 1; i <= 4; i++) { float2 ps = p + L2 * 0.028 * float(i) * scale; occ += cumulusLite(ps, scale, seed, cov, P.b.x, P, shape, srcMap, prev); }
     c = mix(c, SHADE, smoothstep(0.35, 0.95, occ / 4.0) * P.b.w);
     c = mix(c, SHADE, smoothstep(0.45, 1.0, D0.x) * 0.2 * P.b.w * (1.0 - s));
     // a thin shape barely shades itself: give its body the tone a big cloud's body has (a solid one shades itself, so less)
@@ -239,9 +222,8 @@ fragment float4 sky_cloud(VOut in [[stage_in]], constant CloudParams& P [[buffer
 
 // a = (width, height, unit, viewH)
 // far/near = (scroll - start of A, scroll - start of B, window width, fade); offsets computed on the CPU in double precision
-// patch = view-relative (x0, y0, width, height) of the live patch over a shape; patch2 = (on, blend border width, texture u, v extent of this frame's clouds)
-// mask = view-relative (x0, y0, width, height) of the whole shape mask; shapeAM = (forming, melting, thickness, 0)
-struct CompositeParams { float4 a; float4 far; float4 near; float4 patch; float4 patch2; float4 mask; float4 shapeAM; SkyColors sky; };
+// patch = view-relative (x0, y0, width, height) of the live patch over a shape; patch2 = (on, blend border width, texture u, v extent of its clouds)
+struct CompositeParams { float4 a; float4 far; float4 near; float4 patch; float4 patch2; SkyColors sky; };
 
 // plane[i] = (start x, start y, dir x, dir y)   info = (plane A age, plane B age, plane speed, trail life)
 // info2 = (trail drift, 0, 0, 0)
@@ -289,7 +271,7 @@ static float4 layerAt(texture2d<float> A, texture2d<float> B, float4 w, float2 p
 fragment float4 sky_composite(VOut in [[stage_in]], constant CompositeParams& P [[buffer(0)]], constant ExtraParams& E [[buffer(1)]],
                               texture2d<float> farA [[texture(0)]], texture2d<float> farB [[texture(1)]],
                               texture2d<float> nearA [[texture(2)]], texture2d<float> nearB [[texture(3)]],
-                              texture2d<float> patch [[texture(4)]], texture2d<float> mask [[texture(5)]]) {
+                              texture2d<float> patch [[texture(4)]]) {
     float2 frag = float2(in.pos.x, P.a.y - in.pos.y);
     float2 p = frag / P.a.z;
     float2 ph = frag / P.a.y;

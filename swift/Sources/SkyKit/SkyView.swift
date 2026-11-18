@@ -22,7 +22,7 @@ public final class SkyController: ObservableObject {
         renderer?.showShape(source, x: x, y: y, size: size, form: form, hold: hold, fade: fade, density: density, queue: queue, pause: pause)
         wake?()
     }
-    public func clearShape() { renderer?.clearShape() }
+    public func clearShape() { renderer?.clearShape(); wake?() }
     /// Melt the shape on screen back into its cloud now (from wherever it is) and drop the queued ones.
     public func releaseShape() { renderer?.releaseShape(); wake?() }
     /// What the shapes are doing right now (phase, what's on screen, what's next).

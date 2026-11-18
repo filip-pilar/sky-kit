@@ -1,8 +1,10 @@
 # sky-kit
 
-Endless drifting painterly clouds on a bright blue sky — for the web (WebGL2, plain JS or React) and for Apple platforms (Metal, SwiftUI). Same look on both: the Swift port matches the web version to within 0.12/255 per pixel on average.
+Endless drifting painterly clouds on a bright blue sky — for the web (WebGL2, plain JS or React) and for Apple platforms (Metal, SwiftUI). Same look on both: the Swift port matches the web version to within about 0.13/255 per pixel on average.
 
-![preview](docs/preview.png)
+![A bright blue sky with drifting clouds](docs/preview.jpg)
+
+![A real cloud reshaped into the word "hello"](docs/preview-shape.jpg)
 
 - Fills whatever container you put it in, at full device resolution.
 - Cheap: about 2 ms per frame at 2880×1800 on an M4 (clouds are painted into snapshots that slide, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)).
@@ -25,7 +27,7 @@ sky.flyPlane();
 sky.destroy();
 ```
 
-The container needs a size (any CSS size). Overlay content can go inside it: the sky canvas sits underneath (the container becomes `isolation: isolate`) and ignores pointer events. Options set to `undefined` mean "use the default".
+The container needs a size (any CSS size). Overlay content can go inside it: the sky canvas sits underneath (the container becomes `isolation: isolate`) and ignores pointer events. In `createSky` and the React props, options set to `undefined` mean "use the default"; `set()` leaves those unchanged.
 
 ### React
 
@@ -66,14 +68,14 @@ Props are the options below; changing a prop updates the sky live, and removing 
 
 Methods: `set(options)`, `pause()`, `play()`, `flyPlane({ from, to }?)`, `showShape({ text | image | symbol, x, y, size, form, hold, fade, density, queue, pause })`, `releaseShape()`, `clearShape()`, `shapeState`, `snapshot()` (PNG data URL), `destroy()`.
 
-`showShape` accepts text/emoji, a built-in `symbol` (`SKY_SYMBOLS`; `skySymbolSvg(name)` gives matching button icons) or an image (URL, `<img>`, canvas): transparent images use their alpha, opaque ones use dark = shape. Every part of a shape, down to a small dot, forms (its edge comes from the distance to the outline, not from a blur). It is put on a real cloud near `x, y`, which reshapes into it over `form` seconds (default 5); it holds (5; `Infinity` = until released); then it reshapes back into that cloud (7), which stays. `releaseShape()` melts it back from wherever it is (forming, holding or morphing) and drops the queue; `clearShape()` removes it at once. `shapeState` says what is happening (`phase`: none, waiting, forming, holding or melting; `label`; `next`). `density` (0–1, default 0.5 = like the clouds around): low makes the finished shape wispy and see-through, high makes it solid. Calling `showShape` while a shape is showing takes over without a jump: if that shape is holding, it turns straight into the new one; while it is still forming or already melting, the new one comes right after it. Bold line icons form like letters and read best; filled images become solid clouds, so keep their features chunky (fine details blur away, as in real clouds). `queue: true` waits for the current shape to melt and then forms on the same cloud (when it is still there), so `showShape({ text: 'one' })` followed by `showShape({ text: 'two', queue: true })` gives word, cloud, next word, cloud. `pause` (seconds, default 1) is how long the cloud shows in between; with `pause: 0` the first word turns straight into the next once it has held, letter shapes blending puff by puff (over the next word's `form` seconds), first where the old word is and then outward, so a longer word grows out of a shorter one.
+`showShape` accepts text/emoji, a built-in `symbol` (`SKY_SYMBOLS`; `skySymbolSvg(name)` gives matching button icons) or an image (URL, `<img>`, canvas): transparent images use their alpha, opaque ones use dark = shape. Every part of a shape, down to a small dot, forms (its edge comes from the distance to the outline, not from a blur). It is put on a real cloud near `x, y`, which reshapes into it over `form` seconds (default 5); it holds (5; `Infinity` = until released); then it reshapes back into that cloud (7), which stays. `releaseShape()` melts it back from wherever it is (forming, holding or morphing) and drops the queue; `clearShape()` removes it at once. `shapeState` says what is happening (`phase`: none, waiting, forming, holding or melting; `label`; `next`). `density` (0–1, default 0.5 = like the clouds around): low makes the finished shape wispy and see-through, high makes it solid. Calling `showShape` while a shape is showing takes over without a jump: if that shape is holding, it turns straight into the new one; while it is still forming, as soon as it has formed; while it is melting, the new one forms right after it. A blank text or image is ignored. Bold line icons form like letters and read best; filled images become solid clouds, so keep their features chunky (fine details blur away, as in real clouds). `queue: true` waits for the current shape to melt and then forms on the same cloud (when it is still there), so `showShape({ text: 'one' })` followed by `showShape({ text: 'two', queue: true })` gives word, cloud, next word, cloud. `pause` (seconds, default 1) is how long the cloud shows in between; with `pause: 0` the first word turns straight into the next once it has held, letter shapes blending puff by puff (over the next word's `form` seconds), first where the old word is and then outward, so a longer word grows out of a shorter one.
 
 ### Examples
 
 Serve the repo root with any static server, e.g. `python3 -m http.server 5173`, then open:
 
 - `web/examples/index.html` — one component in a hero, cards, a phone-shaped box and a banner
-- `web/examples/playground.html` — every option and extra, with controls
+- `web/examples/playground.html` — every option and extra, with controls: words (chained with commas, looped), symbols, images, Stop, and the shape timing, pause, density and size
 - `web/examples/react.html` — React (loaded from esm.sh, no build)
 - `web/examples/parity.html` — pixel comparison against the Swift render (see below)
 
@@ -114,15 +116,16 @@ The shaders exist twice: GLSL in `web/src/sky.js`, Metal in `swift/Sources/SkyKi
 cd swift && swift run sky-render --width 1600 --height 1000 --seconds 30 --out out/swift-30s.png
 ```
 
-then open `web/examples/parity.html` in a browser at device pixel ratio 2. It renders the same frame in WebGL and compares every pixel. Current result: mean difference 0.131/255, max 9/255, no pixels more than 8 apart.
+then open `web/examples/parity.html` in a browser at device pixel ratio 2. It renders the same frame in WebGL and compares every pixel. Current result: mean difference about 0.13/255, max 9/255, almost no pixels more than 8 apart.
 
-Shapes: `sky-render --symbol smile` and `parity.html?symbol=smile` (also `--release-at 3` / `release=3`) compare symbols and releasing. `sky-render --seconds 4.5 --heart --out out/swift-heart-4.5.png` and `parity.html?heart=1&seconds=4.5&png=../../swift/out/swift-heart-4.5.png` match too (mean about 0.17/255 while forming and melting). With extras: `sky-render --seconds 10 --text hello --plane --out out/swift-extras.png` and `parity.html?text=hello&plane=1&seconds=10&png=../../swift/out/swift-extras.png`. Sky, plane and contrail match; the letters differ, because the browser and CoreText draw the rounded font slightly differently, and since a word is placed by its width the two ports can put the same word a little apart (or, now and then, on a different cloud).
+Shapes: `sky-render --seconds 9 --symbol smile --out out/swift-smile.png` and `parity.html?symbol=smile&seconds=9&png=../../swift/out/swift-smile.png` compare a symbol (add `--release-at 3` / `release=3` for releasing). `sky-render --seconds 4.5 --heart --out out/swift-heart-4.5.png` and `parity.html?heart=1&seconds=4.5&png=../../swift/out/swift-heart-4.5.png` match too (mean about 0.15/255 while forming and melting). With extras: `sky-render --seconds 10 --text hello --plane --out out/swift-extras.png` and `parity.html?text=hello&plane=1&seconds=10&png=../../swift/out/swift-extras.png`. Sky, plane and contrail match; the letters differ, because the browser and CoreText draw the rounded font slightly differently, and since a word is placed by its width the two ports can put the same word a little apart (or, now and then, on a different cloud).
 
 ## Known limits
 
 - WebGL2 is required on the web (all current browsers have it).
 - Shapes form as the sky moves; with `speed: 0` they don't appear.
 - One shape at a time; a new one takes over from the previous (see above), or waits for it with `queue: true`.
+- In Swift, `showShape` builds the shape on the calling thread (tens of milliseconds); the web version builds it in steps between frames.
 - Noise coordinates keep growing with sky time. After several days of continuous running at speed 1 the cloud shading could start to get grainy (float precision). Not a concern for normal sessions.
 
 ## Layout
@@ -130,7 +133,7 @@ Shapes: `sky-render --symbol smile` and `parity.html?symbol=smile` (also `--rele
 ```
 web/src/sky.js        component (WebGL2)          web/src/react.js   React wrapper
 web/src/*.d.ts        TypeScript types            web/examples/      demos and the parity check
-swift/Sources/SkyKit  SkyView, SkyRenderer, SkyOptions, Metal shaders
+swift/Sources/SkyKit  SkyView, SkyRenderer, SkyOptions, Metal shaders, shape masks and symbols
 swift/Sources/sky-render, SkyDemo                 command-line renderer, macOS demo
 docs/ARCHITECTURE.md  how it works
 ```

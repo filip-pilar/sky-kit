@@ -69,11 +69,13 @@ export interface PlaneOptions {
 export interface Sky {
   readonly canvas: HTMLCanvasElement;
   readonly options: Required<SkyOptions>;
+  /** Diagnostics: frames drawn, context losses, the last GL error seen, canvas and snapshot sizes. */
+  readonly info: { frames: number; contextLost: boolean; contextLosses: number; glError: number; size: [number, number]; snapshots: [number, number] | null };
   set(options: SkyOptions): void;
   pause(): void;
   play(): void;
   flyPlane(options?: PlaneOptions): void;
-  /** Nearby clouds drift in and gather into the shape, then it melts back. Needs speed > 0. */
+  /** A real cloud nearby reshapes into the shape, holds it, then reshapes back into itself. Needs speed > 0. */
   showShape(options: ShapeOptions): Promise<void>;
   /** Remove the shape at once (it vanishes); see releaseShape for the smooth way. */
   clearShape(): void;
