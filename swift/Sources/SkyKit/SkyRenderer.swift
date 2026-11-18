@@ -311,9 +311,12 @@ public final class SkyRenderer {
         let near = layers[1]
         let t0 = near.snaps[2].time                       // first snapshot not painted yet
         let vw = Double(width) / unit
-        let hUnits = p.size * viewH * Double(p.mask.height) / Double(p.mask.silhouetteHeight)
+        // size is a fraction of the view height, shrunk if needed so the shape fits 70% of the view width
+        let silH = min(p.size * viewH, 0.7 * vw * Double(p.mask.silhouetteHeight) / Double(p.mask.silhouetteWidth))
+        let hUnits = silH * Double(p.mask.height) / Double(p.mask.silhouetteHeight)
         let wUnits = hUnits * Double(p.mask.width) / Double(p.mask.height)
-        let cx = p.x * vw + dir * near.def.speed * t0, cy = p.y * viewH
+        // the shape drifts with the clouds: place it so it is at (x, y) halfway through its hold
+        let cx = p.x * vw + dir * near.def.speed * (t0 + p.form + p.hold / 2), cy = p.y * viewH
         shape = Shape(texture: tex, rect: SIMD4(Float(cx - wUnits / 2), Float(cy - hUnits / 2), Float(wUnits), Float(hUnits)),
                       t0: t0, form: p.form, hold: p.hold, fade: p.fade)
     }

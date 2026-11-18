@@ -23,6 +23,7 @@ struct ShapeMask {
     let height: Int
     let rgba: [UInt8]
     let silhouetteHeight: Int
+    let silhouetteWidth: Int
 
     static func make(_ source: SkyShapeSource, pixelHeight px: Int = 220) -> ShapeMask? {
         guard let (sil, sw, sh) = silhouette(source, px: px) else { return nil }
@@ -37,7 +38,7 @@ struct ShapeMask {
             rgba[i * 4 + 1] = UInt8(min(255, wide[i] * 1.4))
             rgba[i * 4 + 3] = 255
         }
-        return ShapeMask(width: w, height: h, rgba: rgba, silhouetteHeight: sh)
+        return ShapeMask(width: w, height: h, rgba: rgba, silhouetteHeight: sh, silhouetteWidth: sw)
     }
 
     /// Alpha 0…255, top-down rows.

@@ -497,18 +497,21 @@ export function createSky(container, options = {}) {
         data[d + 3] = 255;
       }
     }
-    return { width: w, height: h, data, silH: sil.height };
+    return { width: w, height: h, data, silH: sil.height, silW: sil.width };
   }
   function placeShape(src, o) {
     const img = buildShapeImage(src);
     const N = layers[1];
     const t0 = N.snaps ? N.snaps[2].time : simTime + N.dt;   // first snapshot not painted yet
     const vw = canvas.width / unit;
-    const hUnits = (o.size ?? 0.32) * viewH * (img.height / img.silH);
+    const form = o.form ?? 5, hold = o.hold ?? 5, fade = o.fade ?? 7;
+    // size is a fraction of the view height, shrunk if needed so the shape fits 70% of the view width
+    const silH = Math.min((o.size ?? 0.32) * viewH, 0.7 * vw * img.silH / img.silW);
+    const hUnits = silH * (img.height / img.silH);
     const wUnits = hUnits * img.width / img.height;
-    const cx = (o.x ?? 0.5) * vw + dir() * N.speed * t0, cy = (o.y ?? 0.6) * viewH;
-    shape = { image: img, rect: [cx - wUnits / 2, cy - hUnits / 2, wUnits, hUnits], t0,
-              form: o.form ?? 5, hold: o.hold ?? 5, fade: o.fade ?? 7 };
+    // the shape drifts with the clouds: place it so it is at (x, y) halfway through its hold
+    const cx = (o.x ?? 0.5) * vw + dir() * N.speed * (t0 + form + hold / 2), cy = (o.y ?? 0.6) * viewH;
+    shape = { image: img, rect: [cx - wUnits / 2, cy - hUnits / 2, wUnits, hUnits], t0, form, hold, fade };
     uploadShape(img);
     redraw();
   }
