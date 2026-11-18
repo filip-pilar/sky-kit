@@ -7,7 +7,7 @@ Endless drifting painterly clouds on a bright blue sky — for the web (WebGL2, 
 - Fills whatever container you put it in, at full device resolution.
 - Cheap: about 2 ms per frame at 2880×1800 on an M4 (clouds are painted into snapshots that slide, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)).
 - Pauses when off-screen or when the tab is hidden; holds still for reduced-motion users.
-- Extras (web and Swift): planes with contrails; text, emoji or SVG/PNG shapes: cloud gathers over the spot and the shape condenses out of it, then melts back into ordinary clouds.
+- Extras (web and Swift): planes with contrails; text, emoji or SVG/PNG shapes: the clouds around drift in and gather into the shape, which later spreads back out and dissolves into the sky.
 
 ## Web
 
@@ -64,7 +64,7 @@ Props are the options below; changing a prop updates the sky live, and removing 
 
 Methods: `set(options)`, `pause()`, `play()`, `flyPlane({ from, to }?)`, `showShape({ text | image, x, y, size, form, hold, fade })`, `clearShape()`, `snapshot()` (PNG data URL), `destroy()`.
 
-`showShape` accepts text/emoji or an image (URL, `<img>`, canvas): transparent images use their alpha, opaque ones use dark = shape. Cloud gathers over the spot and the shape condenses out of it, puff by puff, over `form` seconds (default 5), holds (5), then melts back (7). It drifts with the clouds and is placed so it sits at `x, y` in the middle of its hold; it shrinks to fit 70% of the view width on narrow screens. Shapes form as the sky moves, so they need `speed > 0`.
+`showShape` accepts text/emoji or an image (URL, `<img>`, canvas): transparent images use their alpha, opaque ones use dark = shape. The clouds from a wide area around drift in and gather into it over `form` seconds (default 5), it holds (5), then it spreads back out and dissolves into the surrounding sky (7). It drifts with the clouds and is placed so it sits at `x, y` in the middle of its hold; it shrinks to fit 70% of the view width on narrow screens. Shapes form as the sky moves, so they need `speed > 0`.
 
 ### Examples
 

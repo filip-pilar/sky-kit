@@ -10,7 +10,7 @@ import SkyKit
 
 var opts = SkyOptions()
 var width = 1600, height = 1000, seconds = 0.0, scale = 2.0, out = "sky.png"
-var shapeText: String? = nil, plane = false, heart = false
+var shapeText: String? = nil, plane = false, heart = false, shapeX = 0.5
 
 /// The heart used by the web demos (SVG path, viewBox 100×92), drawn at 220 px tall.
 func heartImage() -> CGImage? {
@@ -50,6 +50,7 @@ while !args.isEmpty {
     case "--direction": opts.direction = value() == "right" ? .right : .left
     case "--text": shapeText = value()                 // start forming this text at time 0
     case "--heart": heart = true                        // start forming a heart at time 0 (same path as the demos)
+    case "--shape-x": shapeX = Double(value()) ?? 0.5   // where the shape sits (0…1 of the view width)
     case "--plane": plane = true                        // a plane from (0, 0.7) to (1, 0.75) at time 0
     case let other:
         FileHandle.standardError.write("unknown option \(other)\n".data(using: .utf8)!); exit(2)
@@ -60,8 +61,8 @@ do {
     let renderer = try SkyRenderer(options: opts)
     let start = Date()
     let image = try renderer.renderImage(width: width, height: height, pixelsPerPoint: scale, seconds: seconds) { r in
-        if let shapeText, !r.showShape(.text(shapeText)) { FileHandle.standardError.write("could not build the shape\n".data(using: .utf8)!) }
-        if heart, let img = heartImage(), !r.showShape(.image(img), size: 0.36) { FileHandle.standardError.write("could not build the heart\n".data(using: .utf8)!) }
+        if let shapeText, !r.showShape(.text(shapeText), x: shapeX) { FileHandle.standardError.write("could not build the shape\n".data(using: .utf8)!) }
+        if heart, let img = heartImage(), !r.showShape(.image(img), x: shapeX, size: 0.36) { FileHandle.standardError.write("could not build the heart\n".data(using: .utf8)!) }
         if plane { r.flyPlane(from: CGPoint(x: 0, y: 0.7), to: CGPoint(x: 1, y: 0.75)) }
     }
     let url = URL(fileURLWithPath: out)
