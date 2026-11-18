@@ -20,6 +20,8 @@ public struct SkyOptions: Equatable, Sendable {
     public var palette: Palette = .day
     /// Custom sky colours; override the palette when set.
     public var colors: SkyColors? = nil
+    /// 0 = even blue sky, 1 = deep blue fading to a pale horizon.
+    public var gradient: Double = 0
     /// Resolution of the cloud snapshots.
     public var quality: Quality = .high
     public var fps: Int = 60
@@ -34,10 +36,10 @@ public struct SkyOptions: Equatable, Sendable {
 
     public init(speed: Double = 1, coverage: Double = 0.6, shadow: Double = 0.3, cloudScale: Double = 1,
                 direction: Direction = .left, seed: Double = 0, palette: Palette = .day, colors: SkyColors? = nil,
-                quality: Quality = .high, fps: Int = 60, interactive: Bool = false, planes: Bool = false,
+                gradient: Double = 0, quality: Quality = .high, fps: Int = 60, interactive: Bool = false, planes: Bool = false,
                 trailLife: Double = 40, respectReducedMotion: Bool = true) {
         self.speed = speed; self.coverage = coverage; self.shadow = shadow; self.cloudScale = cloudScale
-        self.direction = direction; self.seed = seed; self.palette = palette; self.colors = colors
+        self.direction = direction; self.seed = seed; self.palette = palette; self.colors = colors; self.gradient = gradient
         self.quality = quality; self.fps = fps; self.interactive = interactive; self.planes = planes
         self.trailLife = trailLife; self.respectReducedMotion = respectReducedMotion
     }

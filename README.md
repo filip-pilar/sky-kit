@@ -55,6 +55,7 @@ Props are the options below; changing a prop updates the sky live, and removing 
 | `seed` | `0` | any number gives a different sky |
 | `palette` | `'day'` | `'day'`, `'summer'`, `'pastel'` |
 | `skyTop`, `skyMid`, `skyLow` | `null` | custom hex colours, override the palette |
+| `gradient` | `0` | 0 = even blue sky, 1 = deep blue fading to a pale horizon |
 | `quality` | `'high'` | `'high'`, `'balanced'`, `'low'` (snapshot resolution) |
 | `fps` | `60` | frame cap |
 | `interactive` | `false` | pointer movement pushes clouds, which settle back |
@@ -96,7 +97,7 @@ struct ContentView: View {
 }
 ```
 
-`SkyOptions` has the same names and defaults as the web options (`speed`, `coverage`, `shadow`, `cloudScale`, `direction`, `seed`, `palette`, `colors`, `quality`, `fps`, `interactive`, `planes`, `trailLife`, `respectReducedMotion`). Changing the value updates the sky live. `SkyController` sends planes (`flyPlane()`), forms shapes (`showShape(.text("hi"))` or `.image(cgImage)`) and renders stills (`snapshot(width:height:)`). With `interactive`, mouse hover (macOS, iPad pointer) or a finger drag pushes the clouds. The view stops drawing when nothing moves (speed 0 or Reduce Motion) and wakes up when something changes.
+`SkyOptions` has the same names and defaults as the web options (`speed`, `coverage`, `shadow`, `cloudScale`, `direction`, `seed`, `palette`, `colors`, `gradient`, `quality`, `fps`, `interactive`, `planes`, `trailLife`, `respectReducedMotion`). Changing the value updates the sky live. `SkyController` sends planes (`flyPlane()`), forms shapes (`showShape(.text("hi"))` or `.image(cgImage)`) and renders stills (`snapshot(width:height:)`). With `interactive`, mouse hover (macOS, iPad pointer) or a finger drag pushes the clouds. The view stops drawing when nothing moves (speed 0 or Reduce Motion) and wakes up when something changes.
 
 Also included:
 
@@ -112,7 +113,7 @@ The shaders exist twice: GLSL in `web/src/sky.js`, Metal in `swift/Sources/SkyKi
 cd swift && swift run sky-render --width 1600 --height 1000 --seconds 30 --out out/swift-30s.png
 ```
 
-then open `web/examples/parity.html` in a browser at device pixel ratio 2. It renders the same frame in WebGL and compares every pixel. Current result: mean difference 0.116/255, max 8/255, no pixels more than 8 apart.
+then open `web/examples/parity.html` in a browser at device pixel ratio 2. It renders the same frame in WebGL and compares every pixel. Current result: mean difference 0.125/255, max 9/255, no pixels more than 8 apart.
 
 With extras: `sky-render --seconds 10 --text hello --plane --out out/swift-extras.png` and `parity.html?text=hello&plane=1&seconds=10&png=../../swift/out/swift-extras.png`. Sky, plane and contrail match; the only differences are inside the letters, because the browser and CoreText draw the rounded font slightly differently.
 

@@ -20,6 +20,8 @@ export interface SkyOptions {
   skyTop?: string | null;
   skyMid?: string | null;
   skyLow?: string | null;
+  /** 0 = even blue sky, 1 = deep blue fading to a pale horizon. Default 0. */
+  gradient?: number;
   /** Resolution of the cloud snapshots. Default 'high'. */
   quality?: Quality;
   /** Frame cap. Default 60. */

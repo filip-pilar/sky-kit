@@ -105,7 +105,8 @@ public final class SkyRenderer {
         if old.direction != options.direction { shape = nil; pendingShape = nil }   // a placed shape belongs to the old drift
         if old.cloudScale != options.cloudScale || old.quality != options.quality { needsSetup = true }
         else if old.coverage != options.coverage || old.shadow != options.shadow || old.seed != options.seed
-                    || old.direction != options.direction || old.palette != options.palette || old.colors != options.colors { needsRebuild = true }
+                    || old.direction != options.direction || old.palette != options.palette || old.colors != options.colors
+                    || old.gradient != options.gradient { needsRebuild = true }
     }
 
     /// Jump to a moment of sky time (the clouds are repainted for that moment on the next update).
@@ -144,7 +145,8 @@ public final class SkyRenderer {
 
     private func gpuColors() -> GPUColors {
         let c = options.resolvedColors
-        return GPUColors(top: SIMD4(c.top, 0), mid: SIMD4(c.mid, 0), low: SIMD4(c.low, 0))
+        let gradient = Float(min(1, max(0, options.gradient)))
+        return GPUColors(top: SIMD4(c.top, gradient), mid: SIMD4(c.mid, 0), low: SIMD4(c.low, 0))
     }
     private func shapeAmount(at t: Double) -> Double {
         guard let s = shape else { return 0 }

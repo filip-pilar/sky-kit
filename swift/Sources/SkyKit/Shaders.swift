@@ -51,10 +51,12 @@ static float billow(float2 p, int oct) {
     return s / n;
 }
 
+// top.w = gradient: 0 = even blue, 1 = deep blue fading to a pale horizon
 struct SkyColors { float4 top; float4 mid; float4 low; };
 static float3 skyAt(float v, constant SkyColors& c) {
     float3 col = mix(c.low.rgb, c.mid.rgb, smoothstep(0.0, 0.5, v));
-    return mix(col, c.top.rgb, smoothstep(0.4, 1.0, v));
+    col = mix(col, c.top.rgb, smoothstep(0.4, 1.0, v));
+    return mix(mix(c.mid.rgb, c.top.rgb, 0.4), col, c.top.w);
 }
 
 // a = (win0.x, win0.y, unitsPerPixel, viewH)   b = (morph, scale, coverage, shadow)

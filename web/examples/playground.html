@@ -31,6 +31,7 @@
   <div class="r"><label>Clouds</label><output id="o-coverage"></output><input id="coverage" type="range" min="0" max="1" step="0.01"></div>
   <div class="r"><label>Shadow</label><output id="o-shadow"></output><input id="shadow" type="range" min="0" max="1" step="0.01"></div>
   <div class="r"><label>Cloud size</label><output id="o-cloudScale"></output><input id="cloudScale" type="range" min="0.5" max="2" step="0.05"></div>
+  <div class="r"><label>Fade to pale horizon</label><output id="o-gradient"></output><input id="gradient" type="range" min="0" max="1" step="0.01"></div>
   <div class="r"><label>Palette</label><span></span><select id="palette"><option>day</option><option>summer</option><option>pastel</option></select></div>
   <label class="chk"><input type="checkbox" id="interactive" checked> Pointer pushes clouds</label>
   <label class="chk"><input type="checkbox" id="planes" checked> Planes fly by</label>
@@ -47,7 +48,7 @@ import { createSky } from '../src/sky.js';
 const sky = createSky(document.getElementById('sky'), { interactive: true, planes: true });
 window.sky = sky;
 
-for (const k of ['speed', 'coverage', 'shadow', 'cloudScale']) {
+for (const k of ['speed', 'coverage', 'shadow', 'cloudScale', 'gradient']) {
   const inp = document.getElementById(k), out = document.getElementById('o-' + k);
   inp.value = sky.options[k]; out.textContent = (+inp.value).toFixed(2);
   inp.addEventListener('input', () => { out.textContent = (+inp.value).toFixed(2); sky.set({ [k]: +inp.value }); });

@@ -30,6 +30,7 @@ export const SKY_DEFAULTS = {
   seed: 0,               // any number: a different sky
   palette: 'day',        // 'day' | 'summer' | 'pastel'; skyTop/skyMid/skyLow override it
   skyTop: null, skyMid: null, skyLow: null,
+  gradient: 0,           // 0 = even blue sky, 1 = deep blue fading to a pale horizon
   quality: 'high',       // 'high' | 'balanced' | 'low' — resolution of the cloud snapshots
   fps: 60,               // frame cap
   interactive: false,    // pointer movement gently pushes the clouds, which then settle back
@@ -38,7 +39,7 @@ export const SKY_DEFAULTS = {
   respectReducedMotion: true,
 };
 
-const REBUILD_KEYS = ['coverage', 'shadow', 'seed', 'direction', 'palette', 'skyTop', 'skyMid', 'skyLow'];
+const REBUILD_KEYS = ['coverage', 'shadow', 'seed', 'direction', 'palette', 'skyTop', 'skyMid', 'skyLow', 'gradient'];
 const RESETUP_KEYS = ['cloudScale', 'quality'];
 const QUALITY = { high: 1.25, balanced: 1.0, low: 0.75 };   // snapshot pixels per CSS pixel
 const DT = 2.0;            // seconds of sky time between snapshots
@@ -66,10 +67,12 @@ void main(){ gl_Position = vec4(a, 0.0, 1.0); }`;
 const COMMON = `
 const mat2 ROT = mat2(0.8, -0.6, 0.6, 0.8);
 uniform vec3 uSkyTop, uSkyMid, uSkyLow;
+uniform float uGradient;      // 0 = even blue, 1 = deep blue fading to a pale horizon
 float hash12(vec2 p){ vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
 vec3 skyAt(float v){          // v: 0 = bottom of view, 1 = top
   vec3 c = mix(uSkyLow, uSkyMid, smoothstep(0.0, 0.5, v));
-  return mix(c, uSkyTop, smoothstep(0.4, 1.0, v));
+  c = mix(c, uSkyTop, smoothstep(0.4, 1.0, v));
+  return mix(mix(uSkyMid, uSkyTop, 0.4), c, uGradient);
 }`;
 
 const CLOUD_FS = `#version 300 es
@@ -368,7 +371,11 @@ export function createSky(container, options = {}) {
   const freeSnap = s => { gl.deleteTexture(s.tex); gl.deleteFramebuffer(s.fb); };
   const layerSeed = L => [L.seed[0] + S.seed * 7.31, L.seed[1] + S.seed * 3.17];
   function place(L, snap, time) { snap.time = time; snap.x0 = dir() * L.speed * time - MARGIN; }
-  function setSkyUniforms(u) { const [t, m, l] = colors(); gl.uniform3fv(u.uSkyTop, t); gl.uniform3fv(u.uSkyMid, m); gl.uniform3fv(u.uSkyLow, l); }
+  function setSkyUniforms(u) {
+    const [t, m, l] = colors();
+    gl.uniform3fv(u.uSkyTop, t); gl.uniform3fv(u.uSkyMid, m); gl.uniform3fv(u.uSkyLow, l);
+    gl.uniform1f(u.uGradient, Math.min(1, Math.max(0, +S.gradient || 0)));
+  }
   function shapeAmt(t) {
     if (!shape) return 0;
     const a = t - shape.t0, { form, hold, fade } = shape;
