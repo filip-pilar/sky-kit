@@ -49,21 +49,25 @@ public final class SkyRenderer {
         let texture: MTLTexture; let rect: SIMD4<Double>; let t0, form, hold, fade: Double
         let thickness: Double, blend: Double   // blend: width of the patch's blend border (inside the mask's all-zero margin)
         var patch: MTLTexture?; var patchView = SIMD4<Double>(0, 0, 1, 1); var patchUV = SIMD2<Double>(1, 1); var patchReady = false
+        var density = 0.5                                   // how dense the finished shape is (0.5 = like the clouds around)
+        var src: MTLTexture?; var srcRect = SIMD4<Double>(0, 0, 1, 1)   // map of the cloud it is made from (only that cloud gives way)
+        var cloudAt = SIMD2<Double>(0, 0)                   // where that cloud is (the next queued shape forms near it)
         init(texture: MTLTexture, rect: SIMD4<Double>, t0: Double, form: Double, hold: Double, fade: Double, thickness: Double, blend: Double) {
             self.texture = texture; self.rect = rect; self.t0 = t0; self.form = form; self.hold = hold; self.fade = fade
             self.thickness = thickness; self.blend = blend
         }
         var end: Double { t0 + form + hold + fade + 0.5 }
     }
-    private struct PendingShape { let mask: ShapeMask; let x, y, size, form, hold, fade: Double }
+    private struct PendingShape { let mask: ShapeMask; let x, y, size, form, hold, fade, density: Double; var near: SIMD2<Double>? = nil }
     private var planes: [Plane] = []
     private var nextPlane = 8.0
     private var shape: Shape?
     private var pendingShape: PendingShape?
+    private var shapeQueue: [PendingShape] = []   // shapes waiting to form once the current one has melted
 
     // GPU parameter blocks (all float4, so Swift and Metal layouts match)
     private struct GPUColors { var top: SIMD4<Float>, mid: SIMD4<Float>, low: SIMD4<Float> }
-    private struct CloudParams { var a, b, c, d, shapeRect: SIMD4<Float>; var sky: GPUColors }
+    private struct CloudParams { var a, b, c, d, shapeRect: SIMD4<Float>; var sky: GPUColors; var srcRect: SIMD4<Float>; var e: SIMD4<Float> }
     private struct CompositeParams { var a, far, near, patch, patch2, mask, shapeAM: SIMD4<Float>; var sky: GPUColors }
 
     public init(device: MTLDevice? = MTLCreateSystemDefaultDevice(), options: SkyOptions = SkyOptions()) throws {
@@ -110,7 +114,7 @@ public final class SkyRenderer {
     }
 
     private func optionsChanged(from old: SkyOptions) {
-        if old.direction != options.direction { shape = nil; pendingShape = nil }   // a placed shape belongs to the old drift
+        if old.direction != options.direction { shape = nil; pendingShape = nil; shapeQueue.removeAll() }   // a placed shape belongs to the old drift
         if old.cloudScale != options.cloudScale || old.quality != options.quality { needsSetup = true }
         else if old.coverage != options.coverage || old.shadow != options.shadow || old.seed != options.seed
                     || old.direction != options.direction || old.palette != options.palette || old.colors != options.colors
@@ -177,7 +181,9 @@ public final class SkyRenderer {
             c: SIMD4(Float(def.haze), Float(def.farMask), Float(seed.x), Float(seed.y)),
             d: SIMD4(Float(targetHeight), Float(amount), Float(melt), Float(shape?.thickness ?? 0)),
             shapeRect: SIMD4<Float>(shape?.rect ?? SIMD4(0, 0, 1, 1)),
-            sky: gpuColors())
+            sky: gpuColors(),
+            srcRect: SIMD4<Float>(shape?.srcRect ?? SIMD4(0, 0, 1, 1)),
+            e: SIMD4(Float(shape?.density ?? 0.5), 0, 0, 0))
     }
     private func paint(_ def: LayerDef, _ s: Snap, strip: Int, _ cb: MTLCommandBuffer) {
         let rp = MTLRenderPassDescriptor()
@@ -192,7 +198,7 @@ public final class SkyRenderer {
         }
         var p = cloudParams(def, x0: s.x0, y0: 0, time: s.time, targetHeight: cacheH, amount: 0)
         enc.setFragmentBytes(&p, length: MemoryLayout<CloudParams>.stride, index: 0)
-        enc.setFragmentTexture(emptyTexture, index: 0)
+        enc.setFragmentTexture(emptyTexture, index: 0); enc.setFragmentTexture(emptyTexture, index: 1)
         enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
         enc.endEncoding()
     }
@@ -229,7 +235,7 @@ public final class SkyRenderer {
         enc.setViewport(MTLViewport(originX: 0, originY: 0, width: Double(w), height: Double(h), znear: 0, zfar: 1))
         var p = cloudParams(layers[1].def, x0: x0, y0: y0, time: simTime, targetHeight: h, amount: amt, melt: melt)
         enc.setFragmentBytes(&p, length: MemoryLayout<CloudParams>.stride, index: 0)
-        enc.setFragmentTexture(sh.texture, index: 0)
+        enc.setFragmentTexture(sh.texture, index: 0); enc.setFragmentTexture(sh.src ?? emptyTexture, index: 1)
         enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
         enc.endEncoding()
         sh.patchView = SIMD4(x0 - scroll, y0, Double(w) * upp, Double(h) * upp)   // view-relative rect of what was drawn
@@ -267,7 +273,10 @@ public final class SkyRenderer {
         simTime += sdt
         updatePlanes(sdt)
         for i in layers.indices { advance(i, cb) }
-        if let sh = shape, simTime > sh.end { shape = nil }   // melted away
+        if let sh = shape, simTime > sh.end {   // melted back into its cloud; the next queued shape forms near it
+            shape = nil
+            if !shapeQueue.isEmpty { var n = shapeQueue.removeFirst(); n.near = sh.cloudAt; placeShape(n) }
+        }
     }
 
     /// Draw the current frame into `target` (any color texture the size passed to `resize`).
@@ -363,18 +372,21 @@ public final class SkyRenderer {
 
     // MARK: - Shapes
 
-    /// Cloud gathers over the spot and the shape condenses out of it, holds, then melts back into ordinary clouds.
-    /// x, y: centre, 0…1 of the view (y = 0 at the bottom); size: fraction of the view height; times in seconds.
-    /// Needs speed > 0: shapes form as the sky moves on.
+    /// A real cloud near (x, y) reshapes into the shape, holds it, then reshapes back into itself.
+    /// x, y: centre, 0…1 of the view (y = 0 at the bottom); size: fraction of the view height; times in seconds;
+    /// density 0…1 (0.5 = like the clouds around). queue: wait for the current shape to melt, then form on the
+    /// same cloud (word, cloud, next word, cloud, …). Needs speed > 0: shapes form as the sky moves on.
     @discardableResult
     public func showShape(_ source: SkyShapeSource, x: Double = 0.5, y: Double = 0.6, size: Double = 0.32,
-                          form: Double = 5, hold: Double = 5, fade: Double = 7) -> Bool {
+                          form: Double = 5, hold: Double = 5, fade: Double = 7, density: Double = 0.5, queue: Bool = false) -> Bool {
         guard let mask = ShapeMask.make(source) else { return false }
-        let p = PendingShape(mask: mask, x: x, y: y, size: size, form: form, hold: hold, fade: fade)
+        let p = PendingShape(mask: mask, x: x, y: y, size: size, form: form, hold: hold, fade: fade, density: min(1, max(0, density)))
+        if queue && (shape != nil || pendingShape != nil || !shapeQueue.isEmpty) { shapeQueue.append(p); return true }
+        shapeQueue.removeAll()
         if layers.count == 2 { placeShape(p) } else { pendingShape = p }
         return true
     }
-    public func clearShape() { shape = nil; pendingShape = nil }
+    public func clearShape() { shape = nil; pendingShape = nil; shapeQueue.removeAll() }
 
     private func placeShape(_ p: PendingShape) {
         let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: p.mask.width, height: p.mask.height, mipmapped: false)
@@ -393,20 +405,31 @@ public final class SkyRenderer {
         var cx = p.x * vw + scroll, cy = p.y * viewH
         // put it on a real cloud near there: that cloud turns into the shape, and back into itself
         let k = hUnits / Double(p.mask.height), hw = Double(p.mask.silhouetteWidth) * k / 2, hh = silH / 2
-        if let found = cloudNear(x: cx, y: cy, need: p.mask.silhouetteArea * k * k, times: [t0, tMid]) {
-            cx = 2 * hw + 0.06 < vw ? min(max(found.x, scroll + hw + 0.03), scroll + vw - hw - 0.03) : scroll + vw / 2
-            cy = min(max(found.y, hh + 0.03), viewH - hh - 0.03)
+        let tEnd = t0 + p.form + p.hold + p.fade, s0 = dir * near.def.speed * t0, s1 = dir * near.def.speed * tEnd
+        let fits = 2 * hw + 0.06 < vw
+        let allowed = SIMD4(fits ? scroll + hw + 0.03 : scroll + vw / 2, hh + 0.03, fits ? scroll + vw - hw - 0.03 : scroll + vw / 2, viewH - hh - 0.03)
+        let found = cloudNear(x: p.near?.x ?? cx, y: p.near?.y ?? cy, need: p.mask.silhouetteArea * k * k, times: [t0, tMid, tEnd],
+                              x0: min(s0, s1) - 0.3, x1: max(s0, s1) + vw + 0.3, allowed: allowed, box: SIMD2(hw, hh))
+        if let found {
+            cx = min(max(found.centre.x, allowed.x), allowed.z)
+            cy = min(max(found.centre.y, allowed.y), allowed.w)
         }
-        shape = Shape(texture: tex, rect: SIMD4(cx - wUnits / 2, cy - hUnits / 2, wUnits, hUnits),
-                      t0: t0, form: p.form, hold: p.hold, fade: p.fade, thickness: p.mask.thickness,
-                      blend: 0.15 * Double(p.mask.pad) * hUnits / Double(p.mask.height))
+        let sh = Shape(texture: tex, rect: SIMD4(cx - wUnits / 2, cy - hUnits / 2, wUnits, hUnits),
+                       t0: t0, form: p.form, hold: p.hold, fade: p.fade, thickness: p.mask.thickness,
+                       blend: 0.15 * Double(p.mask.pad) * hUnits / Double(p.mask.height))
+        sh.density = p.density
+        sh.src = found?.src; sh.srcRect = found?.srcRect ?? SIMD4(0, 0, 1, 1)
+        sh.cloudAt = found?.centre ?? SIMD2(cx, cy)
+        shape = sh
     }
 
-    /// A map of the near clouds around (x, y) (the most opaque each cell gets at `times`), and the cloud
-    /// to put a shape on (findCloud).
-    private func cloudNear(x: Double, y: Double, need: Double, times: [Double]) -> SIMD2<Double>? {
-        let step = 0.02, x0 = x - 0.6, y0 = max(-0.02, y - 0.45), y1 = min(viewH + 0.02, y + 0.45)
-        let gw = Int(1.2 / step), gh = Int((y1 - y0) / step)
+    /// The cloud to put a shape on (findCloud), from a map of the near clouds over x0…x1 (all that is on screen
+    /// while the shape lives) at the moment it starts forming, times[0]; its centre, and a map of that cloud grown
+    /// a little into where it reaches later on (sourceCells), so only that cloud gives way (srcRect: cloud-space x0, y0, w, h).
+    private func cloudNear(x: Double, y: Double, need: Double, times: [Double], x0: Double, x1: Double, allowed: SIMD4<Double>, box: SIMD2<Double>)
+        -> (centre: SIMD2<Double>, src: MTLTexture, srcRect: SIMD4<Double>)? {
+        let step = 0.02, y0 = -0.02
+        let gw = min(400, Int(ceil((x1 - x0) / step))), gh = Int(ceil((viewH + 0.04) / step))
         guard gh > 4, layers.count == 2,
               let buf = device.makeBuffer(length: gw * gh * 4 * times.count, options: .storageModeShared),
               let cb = queue.makeCommandBuffer() else { return nil }
@@ -420,7 +443,7 @@ public final class SkyRenderer {
             enc.setRenderPipelineState(cloudPipeline)
             var p = cloudParams(layers[1].def, x0: x0, y0: y0, time: t, targetHeight: gh, amount: 0, upp: step)
             enc.setFragmentBytes(&p, length: MemoryLayout<CloudParams>.stride, index: 0)
-            enc.setFragmentTexture(emptyTexture, index: 0)
+            enc.setFragmentTexture(emptyTexture, index: 0); enc.setFragmentTexture(emptyTexture, index: 1)
             enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
             enc.endEncoding()
             guard let blit = cb.makeBlitCommandEncoder() else { return nil }
@@ -430,40 +453,117 @@ public final class SkyRenderer {
         }
         cb.commit(); cb.waitUntilCompleted()
         let px = buf.contents().bindMemory(to: UInt8.self, capacity: gw * gh * 4 * times.count)
-        var grid = [UInt8](repeating: 0, count: gw * gh)
-        for i in times.indices { for yy in 0..<gh { for xx in 0..<gw {   // texture rows are top-down; the map is bottom-up
-            grid[yy * gw + xx] = max(grid[yy * gw + xx], px[i * gw * gh * 4 + ((gh - 1 - yy) * gw + xx) * 4 + 3])
+        var grid = [UInt8](repeating: 0, count: gw * gh), later = grid
+        for i in times.indices { for yy in 0..<gh { for xx in 0..<gw {   // texture rows are top-down; the maps are bottom-up
+            let a = px[i * gw * gh * 4 + ((gh - 1 - yy) * gw + xx) * 4 + 3]
+            if i == 0 { grid[yy * gw + xx] = a }
+            later[yy * gw + xx] = max(later[yy * gw + xx], a)
         } } }
-        return Self.findCloud(grid: grid, gw: gw, gh: gh, origin: SIMD2(x0, y0), step: step, want: SIMD2(x, y), need: need, viewH: viewH)
+        guard let best = Self.findCloud(grid: grid, gw: gw, gh: gh, origin: SIMD2(x0, y0), step: step, want: SIMD2(x, y), need: need, allowed: allowed, box: box)
+        else { return nil }
+        // where the shape will sit (placeShape clamps it the same way)
+        let centre = SIMD2(min(max(best.centre.x, allowed.x), allowed.z), min(max(best.centre.y, allowed.y), allowed.w))
+        let mine = Self.sourceCells(label: best.label, comp: best.comp, later: later, gw: gw, gh: gh,
+                                    c: (centre - SIMD2(x0, y0)) / step, b: box / step, step: step)
+        var mask = [UInt8](repeating: 0, count: gw * gh * 4)   // rows bottom-up, as sampled
+        for i in 0..<(gw * gh) { mask[i * 4] = mine[i] }
+        let sd = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: gw, height: gh, mipmapped: false)
+        sd.usage = [.shaderRead]
+        guard let src = device.makeTexture(descriptor: sd) else { return nil }
+        mask.withUnsafeBytes { src.replace(region: MTLRegionMake2D(0, 0, gw, gh), mipmapLevel: 0, withBytes: $0.baseAddress!, bytesPerRow: gw * 4) }
+        return (centre, src, SIMD4(x0, y0, Double(gw) * step, Double(gh) * step))
     }
-    /// The cloud a shape is placed on (port of findCloud in sky.js; keep the two identical): of the whole
-    /// clouds in the map (rows bottom-up), the one nearest to `want` whose size is closest to `need`,
-    /// mostly in view. Returns its centre.
-    static func findCloud(grid: [UInt8], gw: Int, gh: Int, origin: SIMD2<Double>, step: Double, want: SIMD2<Double>, need: Double, viewH: Double) -> SIMD2<Double>? {
+    /// The map of the cloud a shape is made from (port of sourceCells in sky.js; keep the two identical): its cells
+    /// (label == comp), grown up to 4 cells into where any cloud reaches later on (later > 8) but not into other
+    /// clouds, then softened (3×3), and fading out from 0.05 to 0.3 cloud units away from the shape's box (centre
+    /// c and half size b, in cells), so of a big cloud only the part near the shape gives way. 0…255 per cell,
+    /// same layout as the maps.
+    static func sourceCells(label: [Int32], comp: Int32, later: [UInt8], gw: Int, gh: Int, c: SIMD2<Double>, b: SIMD2<Double>, step: Double) -> [UInt8] {
         let n = gw * gh
-        var label = [Bool](repeating: false, count: n)
-        var best: (score: Double, c: SIMD2<Double>)? = nil
-        for start in 0..<n where grid[start] > 8 && !label[start] {
-            var stack = [start]; label[start] = true
-            var cells = 0, seen = 0, wsum = 0.0, cx = 0.0, cy = 0.0, border = false
-            while let i = stack.popLast() {
-                let x = i % gw, y = i / gw, w = Double(grid[i])
-                cells += 1; wsum += w; cx += w * Double(x); cy += w * Double(y)
-                let yy = origin.y + (Double(y) + 0.5) * step
-                if yy >= 0 && yy <= viewH { seen += 1 }
-                if x == 0 || y == 0 || x == gw - 1 || y == gh - 1 { border = true }
+        var depth = [Int8](repeating: -1, count: n)
+        var front: [Int] = []
+        for i in 0..<n where label[i] == comp { depth[i] = 0; front.append(i) }
+        var d: Int8 = 1
+        while d <= 4 && !front.isEmpty {
+            var next: [Int] = []
+            for i in front {
+                let x = i % gw, y = i / gw
                 for (nx, ny) in [(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)] where nx >= 0 && ny >= 0 && nx < gw && ny < gh {
                     let j = ny * gw + nx
-                    if grid[j] > 8 && !label[j] { label[j] = true; stack.append(j) }
+                    if depth[j] < 0 && later[j] > 8 && label[j] < 0 { depth[j] = d; next.append(j) }
                 }
             }
-            let area = Double(cells) * step * step
-            if border || area < 0.25 * need || Double(seen) < 0.6 * Double(cells) { continue }
-            let c = SIMD2(origin.x + (cx / wsum + 0.5) * step, origin.y + (cy / wsum + 0.5) * step)
-            let score = exp(-((c.x - want.x) * (c.x - want.x) + (c.y - want.y) * (c.y - want.y)).squareRoot() / 0.35) * exp(-0.6 * abs(log(area / need)))
-            if best == nil || score > best!.score { best = (score, c) }
+            front = next; d += 1
         }
-        return best?.c
+        var out = [UInt8](repeating: 0, count: n)
+        for y in 0..<gh { for x in 0..<gw {
+            var k = 0
+            for dy in -1...1 { for dx in -1...1 where depth[min(gh - 1, max(0, y + dy)) * gw + min(gw - 1, max(0, x + dx))] >= 0 { k += 1 } }
+            let ex = max(abs(Double(x) + 0.5 - c.x) - b.x, 0), ey = max(abs(Double(y) + 0.5 - c.y) - b.y, 0)
+            let t = min(max(((ex * ex + ey * ey).squareRoot() * step - 0.05) / 0.25, 0), 1)
+            out[y * gw + x] = UInt8((255.0 * Double(k) / 9.0 * (1 - t * t * (3 - 2 * t))).rounded())
+        } }
+        return out
+    }
+    /// The cloud a shape is placed on (port of findCloud in sky.js; keep the two identical): of the clouds in
+    /// the map (rows bottom-up), the one nearest to `want` whose size is closest to `need` and that best fills a
+    /// box the shape's size (half width, half height `box`) with no other cloud in or right next to it, somewhere
+    /// inside `allowed` (x0, y0, x1, y1: where the shape's centre can be so it stays in view). Returns that spot,
+    /// the label of every cell (-1 = no cloud) and the picked cloud's label (nil when there is no cloud).
+    static func findCloud(grid: [UInt8], gw: Int, gh: Int, origin: SIMD2<Double>, step: Double, want: SIMD2<Double>, need: Double,
+                          allowed: SIMD4<Double>, box: SIMD2<Double>) -> (centre: SIMD2<Double>, label: [Int32], comp: Int32)? {
+        let n = gw * gh, W = gw + 1
+        var label = [Int32](repeating: -1, count: n), sat = [Int32](repeating: 0, count: W * (gh + 1)), all = sat
+        let bw = max(1, Int((box.x / step).rounded())), bh = max(1, Int((box.y / step).rounded()))
+        func sum(_ t: [Int32], _ xa: Int, _ ya: Int, _ xb: Int, _ yb: Int) -> Double {
+            let xa = max(0, xa), ya = max(0, ya), xb = min(gw, xb), yb = min(gh, yb)
+            return Double(t[yb * W + xb] - t[ya * W + xb] - t[yb * W + xa] + t[ya * W + xa])
+        }
+        for y in 0..<gh {
+            var row: Int32 = 0
+            for x in 0..<gw { if grid[y * gw + x] > 8 { row += 1 }; all[(y + 1) * W + x + 1] = all[y * W + x + 1] + row }
+        }
+        var best: (score: Double, c: SIMD2<Double>, comp: Int32)? = nil
+        var comp: Int32 = 0
+        for start in 0..<n where grid[start] > 8 && label[start] < 0 {
+            let id = comp; comp += 1
+            var stack = [start], mine: [Int] = []; label[start] = id
+            var border = false
+            while let i = stack.popLast() {
+                let x = i % gw, y = i / gw
+                mine.append(i)
+                if x == 0 || x == gw - 1 { border = true }
+                for (nx, ny) in [(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)] where nx >= 0 && ny >= 0 && nx < gw && ny < gh {
+                    let j = ny * gw + nx
+                    if grid[j] > 8 && label[j] < 0 { label[j] = id; stack.append(j) }
+                }
+            }
+            let area = Double(mine.count) * step * step
+            if area < 0.05 * need { continue }                                     // a speck
+            // where on this cloud the shape sits: the spot (on the cloud, in view) with the most of it under the box
+            // and the least of other clouds in or right next to it (they would merge with the shape)
+            for y in 0..<gh {
+                var row: Int32 = 0
+                for x in 0..<gw { if label[y * gw + x] == id { row += 1 }; sat[(y + 1) * W + x + 1] = sat[y * W + x + 1] + row }
+            }
+            var spot: (s: Double, c: SIMD2<Double>)? = nil
+            for i in mine {
+                let x = i % gw, y = i / gw
+                let fill = sum(sat, x - bw, y - bh, x + bw + 1, y + bh + 1) / Double((2 * bw + 1) * (2 * bh + 1))
+                let other = (sum(all, x - bw - 3, y - bh - 3, x + bw + 4, y + bh + 4) - sum(sat, x - bw - 3, y - bh - 3, x + bw + 4, y + bh + 4)) / Double((2 * bw + 7) * (2 * bh + 7))
+                let c = SIMD2(origin.x + (Double(x) + 0.5) * step, origin.y + (Double(y) + 0.5) * step)
+                let ox = max(allowed.x - c.x, 0, c.x - allowed.z), oy = max(allowed.y - c.y, 0, c.y - allowed.w)
+                let s = max(0, fill - 1.5 * other) * exp(-(ox * ox + oy * oy).squareRoot() / 0.1)
+                if spot == nil || s > spot!.s { spot = (s, c) }
+            }
+            guard let spot else { continue }
+            let c = spot.c
+            let score = exp(-((c.x - want.x) * (c.x - want.x) + (c.y - want.y) * (c.y - want.y)).squareRoot() / 0.35) * exp(-0.6 * abs(log(area / need)))
+                      * (0.05 + spot.s) * (border ? 0.5 : 1)
+            if best == nil || score > best!.score { best = (score, c, id) }
+        }
+        guard let best else { return nil }
+        return (best.c, label, best.comp)
     }
 
     // MARK: - Offscreen

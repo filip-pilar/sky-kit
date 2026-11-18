@@ -85,6 +85,9 @@ uniform vec4 uShapeRect;      // cloud-space x0, y0, width, height of the shape 
 uniform float uShapeAmt;      // forming progress: 0 = no shape .. 1 = formed (stays 1 while holding and melting)
 uniform float uShapeMelt;     // melting progress 0..1
 uniform float uShapeThick;    // 0 = thin strokes (text) .. 1 = a solid shape (a heart, an emoji)
+uniform float uShapeDensity; // how dense the finished shape is, 0..1 (0.5 = like the clouds around)
+uniform sampler2D uSrc;       // the cloud the shape is made from (1 on it), so only that cloud gives way
+uniform vec4 uSrcRect;       // cloud-space x0, y0, width, height of that map
 out vec4 outColor;
 ${COMMON}
 const vec3 LIT = vec3(1.0, 0.98, 0.94), SHADE = vec3(0.635, 0.722, 0.902), RIM = vec3(1.0, 0.925, 0.8);
@@ -125,58 +128,74 @@ vec4 shapeAt(vec2 p){
 float smax(float a, float b, float k){ float h = clamp(0.5 + 0.5 * (a - b) / k, 0.0, 1.0); return mix(b, a, h) + k * h * (1.0 - h); }
 float smin(float a, float b, float k){ return -smax(-a, -b, k); }
 vec2 gatherFrom(vec2 p, out vec2 toward){ toward = vec2(0.0); return p; }   // (shapes no longer pull clouds in)
+float srcAt(vec2 p){   // (sharp inside, fading out at a distance from the shape)
+  vec2 su = (p - uSrcRect.xy) / uSrcRect.zw;
+  if (su.x < 0.0 || su.y < 0.0 || su.x > 1.0 || su.y > 1.0) return 0.0;
+  return texture(uSrc, su).r;
+}
 // v: the near clouds' density here; p: position. The shape sits on a real cloud and that cloud reshapes
-// into it: first where the cloud is, then outward from it. Melting runs it back, so the shape turns into
-// the same cloud again, which stays (and keeps drifting and changing like the others).
-float withShape(float v, vec2 p, float thr, float bil, vec2 so, bool lite){
+// into it, puff by puff. Melting runs it back, so the shape turns into the same cloud again, which stays
+// (and keeps drifting and changing like the others). Other clouds are left alone.
+float withShape(float v, vec2 p, float thr, float bil, vec2 so, bool lite, out float own){
+  own = 0.0;                                                         // how much of the density here is the shape's
   if (uShapeAmt <= 0.0) return v;
   vec4 m = shapeAt(p);
-  if (m.y <= 0.0) return v;
+  float src = srcAt(p);
+  if (m.y <= 0.0 && src <= 0.0) return v;
   float t = uShapeThick;
   float form = uShapeAmt * (1.0 - uShapeMelt);                       // rises while forming, falls while melting
-  float cloudy = smoothstep(thr - 0.25, thr + 0.1, v);              // 1 on the cloud
+  float cloudy = smoothstep(thr - 0.25, thr + 0.1, v);              // 1 on a cloud
   float rag = lite ? 0.5 : fbm(p * 6.0 + vec2(3.1, 5.9), 2) + 0.5;
   float when = clamp(smoothstep(0.25, 0.75, rag) * 0.7 + (1.0 - cloudy) * 0.2, 0.0, 0.75);   // puff by puff, spread over the whole time; on the cloud a little sooner
   float S = smoothstep(when, when + 0.25, form);
   // the shape's own cloud: its outline wobbles at puff scale (stroke width varies like a lumpy cloud);
   // bumps about a letter-stroke wide; solid shapes also get a domed body (densest in the middle, so it
   // shades round) and cauliflower lumps that shape the outline
-  vec2 wob = lite ? vec2(0.0) : vec2(fbm(p * 6.5 + vec2(2.3, 8.9), 2), fbm(p * 6.5 + vec2(7.7, 1.3), 2)) * mix(0.025, 0.06, t);
-  vec4 ms = shapeAt(p + wob);
-  float R = ms.x, fill = thr - 0.3;
-  if (R > 0.001){
-    float lumps = lite ? 0.0 : fbm(p * 5.5 + vec2(5.1, 7.3), 3);
-    float big = lite ? 0.0 : fbm(p * 9.0 + vec2(3.7, 1.9), 3);
-    float small = lite ? 0.0 : fbm(p * 26.0 + vec2(8.1, 2.3), 2);
-    fill = thr + (R - 0.5) * mix(0.5, 0.45, t) + ((ms.z - 0.5) * 0.3 + lumps * 0.3 + 0.05) * t
-         + big * mix(0.3, 0.15, t) + small * mix(0.15, 0.05, t) + (bil - 0.35) * 0.2;
-    fill += clamp(v - thr, -0.3, 0.3) * 0.25;                       // thicker where the cloud is thick
-    fill = mix(thr - 0.3, fill, smoothstep(0.0, 0.1, R));
+  float R = 0.0, fill = thr - 0.3;
+  if (m.y > 0.0){
+    vec2 wob = lite ? vec2(0.0) : vec2(fbm(p * 6.5 + vec2(2.3, 8.9), 2), fbm(p * 6.5 + vec2(7.7, 1.3), 2)) * mix(0.025, 0.06, t);
+    vec4 ms = shapeAt(p + wob);
+    R = ms.x;
+    if (R > 0.001){
+      float lumps = lite ? 0.0 : fbm(p * 5.5 + vec2(5.1, 7.3), 3);
+      float big = lite ? 0.0 : fbm(p * 9.0 + vec2(3.7, 1.9), 3);
+      float small = lite ? 0.0 : fbm(p * 26.0 + vec2(8.1, 2.3), 2);
+      fill = thr + (R - 0.5) * mix(0.5, 0.45, t) + ((ms.z - 0.5) * 0.3 + lumps * 0.3 + 0.05) * t
+           + big * mix(0.3, 0.15, t) + small * mix(0.15, 0.05, t) + (bil - 0.35) * 0.2;
+      fill += clamp(v - thr, -0.3, 0.3) * 0.25 + (uShapeDensity - 0.5) * mix(0.2, 0.35, step(0.5, uShapeDensity));   // thicker where the cloud is thick; overall density
+      fill = mix(thr - 0.3, fill, smoothstep(0.0, 0.1, R));
+    }
   }
-  // the cloud's density becomes the shape's (near the shape, where the shape isn't, the cloud gives way)
-  return mix(v, fill, S * max(m.y, smoothstep(0.0, 0.1, R)));
+  // the shape replaces the cloud it is made from, which thins out evenly (so it shrinks along its own puffy
+  // edges) while the shape grows puff by puff; any other cloud it touches is only added to, never cut into
+  src = smoothstep(0.1, 0.9, src + 0.35 * (rag - 0.5));             // where it fades out, a puffy edge
+  float w = max(S * smoothstep(0.0, 0.1, R), smoothstep(0.05, 0.85, form + 0.1 * (rag - 0.5)) * src);
+  own = w * max(src, smoothstep(-0.05, 0.05, fill - v));
+  return mix(v, mix(max(v, fill), fill, src), w);
 }
 
-vec2 cumulus(vec2 p, vec2 pg, vec2 so, float scale, vec2 seed, float cov, float morph){
+vec3 cumulus(vec2 p, vec2 pg, vec2 so, float scale, vec2 seed, float cov, float morph){
   vec2 q = pg * vec2(2.2, 3.4) / scale + seed;
   vec2 w = vec2(fbm(q * 0.5 + morph, 3), fbm(q * 0.5 + 5.2 - morph, 3));
   float base = fbm(q * 0.7 + w * 0.6, 4);
   float bil = billow(q * 2.0 + w, 3);
   float thr = mix(0.22, -0.12, cov);
-  float v = withShape(base + 0.15 * (bil - 0.35), p, thr, bil, so, false);
+  float own;
+  float v = withShape(base + 0.15 * (bil - 0.35), p, thr, bil, so, false, own);
   vec4 m = uShapeAmt > 0.0 ? shapeAt(p + so) : vec4(0.0);          // follows the shape as it spreads out
   // a shape's rim fades out slowly like other clouds' edges (more for solid shapes); the outline stays put
-  float rim = smoothstep(0.0, 0.3, m.y) * (1.0 - 0.6 * smoothstep(0.35, 0.8, m.x)) * mix(0.6, 1.0, uShapeThick) * smoothstep(0.0, 0.5, uShapeAmt) * (1.0 - smoothstep(0.2, 0.6, uShapeMelt));
+  float rim = own * (1.0 - 0.6 * smoothstep(0.35, 0.8, m.x)) * mix(0.6, 1.0, uShapeThick) * smoothstep(0.0, 0.5, uShapeAmt) * (1.0 - smoothstep(0.2, 0.6, uShapeMelt));
   float D = smoothstep(thr, thr + 0.22 + 0.55 * rim, v);
   float dome = smoothstep(thr, thr + 0.7, v);
-  float inShape = m.x * smoothstep(0.0, 0.5, uShapeAmt) * (1.0 - uShapeMelt);   // softer fine texture inside a shape
-  return vec2(D, (0.05 * dome + 0.012 * D * bil * (1.0 - 0.5 * inShape)) * scale);
+  float inShape = m.x * own;                                         // softer fine texture inside a shape
+  return vec3(D, (0.05 * dome + 0.012 * D * bil * (1.0 - 0.5 * inShape)) * scale, own);
 }
 float cumulusLite(vec2 p, vec2 pg, vec2 so, float scale, vec2 seed, float cov, float morph){
   vec2 q = pg * vec2(2.2, 3.4) / scale + seed;
   vec2 w = vec2(fbm(q * 0.5 + morph, 2), fbm(q * 0.5 + 5.2 - morph, 2));
   float thr = mix(0.22, -0.12, cov);
-  float v = withShape(fbm(q * 0.7 + w * 0.6, 3), p, thr, 0.35, so, true);
+  float own;
+  float v = withShape(fbm(q * 0.7 + w * 0.6, 3), p, thr, 0.35, so, true, own);
   return smoothstep(thr, thr + 0.22, v);
 }
 void main(){
@@ -187,7 +206,7 @@ void main(){
   vec2 toward;
   vec2 pg = gatherFrom(p, toward), dg = pg - p;                      // same nudge for the shadow samples
   vec2 so = toward * mix(0.07, 0.13, uShapeThick) * smoothstep(0.1, 0.8, uShapeMelt);   // melting: its pieces drift outward
-  vec2 D0 = cumulus(p, pg, so, uScale, uSeed, cov, uMorph);
+  vec3 D0 = cumulus(p, pg, so, uScale, uSeed, cov, uMorph);
   float alpha = smoothstep(0.0, 0.61, D0.x);
   vec2 grad = vec2(dFdx(D0.y), dFdy(D0.y)) / uUpp;
   if (alpha < 0.002){ outColor = vec4(0.0); return; }
@@ -203,7 +222,7 @@ void main(){
   c = mix(c, SHADE, smoothstep(0.35, 0.95, occ / 4.0) * uShadow);
   c = mix(c, SHADE, smoothstep(0.45, 1.0, D0.x) * 0.2 * uShadow * (1.0 - s));
   // a shape is thin, so it barely shades itself: give its body the tone a big cloud's body has
-  if (uShapeAmt > 0.0) c = mix(c, SHADE, shapeAt(p + so).x * smoothstep(0.0, 0.5, uShapeAmt) * (1.0 - uShapeMelt) * 0.7 * uShadow);
+  if (uShapeAmt > 0.0) c = mix(c, SHADE, shapeAt(p + so).x * D0.z * 0.7 * uShadow);
   float edge = 1.0 - smoothstep(0.0, 0.3, D0.x);
   float facing = clamp(dot(normalize(n.xy + 1e-5), L2), 0.0, 1.0);
   c += RIM * edge * facing * 0.45;
@@ -371,36 +390,92 @@ function blurAt(alpha, w, h, radius, k) {
   return out;
 }
 /**
- * The cloud a shape is placed on (port of ShapePlan.findCloud in Swift; keep the two identical): of the
- * whole clouds in the map (opacity 0..255 per cell, rows bottom-up, cell (0, 0) starting at (ox, oy)), the
- * one nearest to (wx, wy) whose size is closest to `need`, mostly in view. Returns its centre or null.
+ * The cloud a shape is placed on (port of SkyRenderer.findCloud in Swift; keep the two identical): of the
+ * clouds in the map (opacity 0..255 per cell, rows bottom-up, cell (0, 0) starting at (ox, oy)), the one
+ * nearest to (wx, wy) whose size is closest to `need` and that best fills a box the shape's size (half width,
+ * half height `box`) with no other cloud in or right next to it, somewhere inside `allowed` (x0, y0, x1, y1:
+ * where the shape's centre can be so it stays in view). Returns that spot, the cloud's id `comp` and the
+ * cells' ids `label` (or null when there is no cloud).
  */
-function findCloud(grid, gw, gh, ox, oy, step, wx, wy, need, viewH) {
-  const n = gw * gh, label = new Int32Array(n).fill(-1);
-  let best = null;
-  for (let start = 0; start < n; start++) {
-    if (grid[start] <= 8 || label[start] >= 0) continue;
-    const stack = [start]; label[start] = 1;
-    let cells = 0, seen = 0, wsum = 0, cx = 0, cy = 0, border = false;
-    while (stack.length) {
-      const i = stack.pop(), x = i % gw, y = (i - x) / gw, w = grid[i];
-      cells++; wsum += w; cx += w * x; cy += w * y;
-      const yy = oy + (y + 0.5) * step;
-      if (yy >= 0 && yy <= viewH) seen++;
-      if (x === 0 || y === 0 || x === gw - 1 || y === gh - 1) border = true;
+/**
+ * The map of the cloud a shape is made from (port of SkyRenderer.sourceCells; keep the two identical): its
+ * cells (`label` === `comp`), grown up to 4 cells into where any cloud reaches later on (`later` > 8) but not
+ * into other clouds, then softened (3×3), and fading out from 0.05 to 0.3 cloud units away from the shape's
+ * box (centre cx, cy and half size bw, bh, in cells), so of a big cloud only the part near the shape gives way.
+ * 0..255 per cell, same layout as the maps.
+ */
+function sourceCells(label, comp, later, gw, gh, cx, cy, bw, bh, step) {
+  const n = gw * gh, depth = new Int8Array(n).fill(-1);
+  let front = [];
+  for (let i = 0; i < n; i++) if (label[i] === comp) { depth[i] = 0; front.push(i); }
+  for (let d = 1; d <= 4 && front.length; d++) {
+    const next = [];
+    for (const i of front) {
+      const x = i % gw, y = (i - x) / gw;
       for (const [nx, ny] of [[x - 1, y], [x + 1, y], [x, y - 1], [x, y + 1]]) {
         if (nx < 0 || ny < 0 || nx >= gw || ny >= gh) continue;
         const j = ny * gw + nx;
-        if (grid[j] > 8 && label[j] < 0) { label[j] = 1; stack.push(j); }
+        if (depth[j] < 0 && later[j] > 8 && label[j] < 0) { depth[j] = d; next.push(j); }
       }
     }
-    const area = cells * step * step;
-    if (border || area < 0.25 * need || seen < 0.6 * cells) continue;
-    const c = [ox + (cx / wsum + 0.5) * step, oy + (cy / wsum + 0.5) * step];
-    const score = Math.exp(-Math.hypot(c[0] - wx, c[1] - wy) / 0.35) * Math.exp(-0.6 * Math.abs(Math.log(area / need)));
-    if (!best || score > best.score) best = { score, x: c[0], y: c[1] };
+    front = next;
   }
-  return best;
+  const out = new Uint8Array(n);
+  for (let y = 0; y < gh; y++) for (let x = 0; x < gw; x++) {
+    let k = 0;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      const sx = Math.min(gw - 1, Math.max(0, x + dx)), sy = Math.min(gh - 1, Math.max(0, y + dy));
+      if (depth[sy * gw + sx] >= 0) k++;
+    }
+    const d = Math.hypot(Math.max(Math.abs(x + 0.5 - cx) - bw, 0), Math.max(Math.abs(y + 0.5 - cy) - bh, 0)) * step;
+    out[y * gw + x] = Math.round(255 * k / 9 * (1 - smooth01((d - 0.05) / 0.25)));
+  }
+  return out;
+}
+function findCloud(grid, gw, gh, ox, oy, step, wx, wy, need, allowed, box) {
+  const n = gw * gh, W = gw + 1, label = new Int32Array(n).fill(-1), sat = new Int32Array(W * (gh + 1)), all = new Int32Array(W * (gh + 1));
+  const bw = Math.max(1, Math.round(box[0] / step)), bh = Math.max(1, Math.round(box[1] / step));
+  const sum = (t, xa, ya, xb, yb) => { xa = Math.max(0, xa); ya = Math.max(0, ya); xb = Math.min(gw, xb); yb = Math.min(gh, yb);
+    return t[yb * W + xb] - t[ya * W + xb] - t[yb * W + xa] + t[ya * W + xa]; };
+  for (let y = 0; y < gh; y++) { let row = 0; for (let x = 0; x < gw; x++) { if (grid[y * gw + x] > 8) row++; all[(y + 1) * W + x + 1] = all[y * W + x + 1] + row; } }
+  let best = null, comp = 0;
+  for (let start = 0; start < n; start++) {
+    if (grid[start] <= 8 || label[start] >= 0) continue;
+    const stack = [start], mine = []; label[start] = comp;
+    let border = false;
+    while (stack.length) {
+      const i = stack.pop(), x = i % gw, y = (i - x) / gw;
+      mine.push(i);
+      if (x === 0 || x === gw - 1) border = true;
+      for (const [nx, ny] of [[x - 1, y], [x + 1, y], [x, y - 1], [x, y + 1]]) {
+        if (nx < 0 || ny < 0 || nx >= gw || ny >= gh) continue;
+        const j = ny * gw + nx;
+        if (grid[j] > 8 && label[j] < 0) { label[j] = comp; stack.push(j); }
+      }
+    }
+    const area = mine.length * step * step, id = comp++;
+    if (area < 0.05 * need) continue;                                  // a speck
+    // where on this cloud the shape sits: the spot (on the cloud, in view) with the most of it under the box
+    // and the least of other clouds in or right next to it (they would merge with the shape)
+    for (let y = 0; y < gh; y++) {
+      let row = 0;
+      for (let x = 0; x < gw; x++) { if (label[y * gw + x] === id) row++; sat[(y + 1) * W + x + 1] = sat[y * W + x + 1] + row; }
+    }
+    let spot = null;
+    for (const i of mine) {
+      const x = i % gw, y = (i - x) / gw;
+      const fill = sum(sat, x - bw, y - bh, x + bw + 1, y + bh + 1) / ((2 * bw + 1) * (2 * bh + 1));
+      const other = (sum(all, x - bw - 3, y - bh - 3, x + bw + 4, y + bh + 4) - sum(sat, x - bw - 3, y - bh - 3, x + bw + 4, y + bh + 4)) / ((2 * bw + 7) * (2 * bh + 7));
+      const px = ox + (x + 0.5) * step, py = oy + (y + 0.5) * step;
+      const out = Math.hypot(Math.max(allowed[0] - px, 0, px - allowed[2]), Math.max(allowed[1] - py, 0, py - allowed[3]));
+      const s = Math.max(0, fill - 1.5 * other) * Math.exp(-out / 0.1);
+      if (!spot || s > spot.s) spot = { s, x: px, y: py };
+    }
+    const score = Math.exp(-Math.hypot(spot.x - wx, spot.y - wy) / 0.35) * Math.exp(-0.6 * Math.abs(Math.log(area / need)))
+                * (0.05 + spot.s) * (border ? 0.5 : 1);
+    if (!best || score > best.score) best = { score, x: spot.x, y: spot.y, comp: id };
+  }
+  return best ? { ...best, label } : null;
 }
 /** Drop keys whose value is undefined, so `{ speed: undefined }` means "default", not "broken". */
 export function cleanOptions(o = {}) {
@@ -429,6 +504,9 @@ export function createSky(container, options = {}) {
   let nextPlane = 8;
   let shape = null;               // { rect, t0, form, hold, fade, image }
   let shapeTicket = 0;            // bumped by each showShape/clearShape, so a slower build can't overwrite a newer one
+  let shapeQueue = [];            // shapes waiting for the current one to melt (showShape with queue: true), in call order; img: null while it builds
+  let leadBuilding = 0;           // non-queued showShape calls still building their image (the queue waits for them)
+  let lastCloud = null;           // where the last shape's cloud was (the next queued shape forms near it)
   const reduceMotion = window.matchMedia ? matchMedia('(prefers-reduced-motion: reduce)') : null;
   const dir = () => (S.direction === 'right' ? -1 : 1);
   const effectiveSpeed = () => (S.respectReducedMotion && reduceMotion?.matches ? 0 : S.speed);
@@ -466,7 +544,7 @@ export function createSky(container, options = {}) {
     emptyTex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, emptyTex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(4)); texParams();
     shapeTex = null;
-    if (shape) { uploadShape(shape.image); shape.patch = null; shape.patchReady = false; }   // old GPU objects are gone
+    if (shape) { uploadShape(shape.image); shape.patch = null; shape.patchReady = false; shape.src = null; }   // old GPU objects are gone
     layers = LAYERS.map(L => ({ ...L, snaps: null }));
     needsSetup = true;
   }
@@ -504,6 +582,9 @@ export function createSky(container, options = {}) {
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, amt > 0 ? shapeTex : emptyTex); gl.uniform1i(u.uShape, 0);
     gl.uniform1f(u.uShapeAmt, amt); gl.uniform1f(u.uShapeMelt, melt); gl.uniform1f(u.uShapeThick, shape ? shape.thick : 0);
     gl.uniform4fv(u.uShapeRect, shape ? shape.rect : [0, 0, 1, 1]);
+    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, amt > 0 && shape?.src ? shape.src.tex : emptyTex); gl.uniform1i(u.uSrc, 1);
+    gl.uniform4fv(u.uSrcRect, shape?.src ? shape.src.rect : [0, 0, 1, 1]);
+    gl.uniform1f(u.uShapeDensity, shape ? shape.density : 0.5);
     setSkyUniforms(u);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.disable(gl.SCISSOR_TEST);
@@ -549,6 +630,7 @@ export function createSky(container, options = {}) {
   }
   function freeShape() {
     if (shape?.patch && gl) { gl.deleteTexture(shape.patch.tex); gl.deleteFramebuffer(shape.patch.fb); }
+    if (shape?.src && gl) gl.deleteTexture(shape.src.tex);
     shape = null;
   }
   function rebuildAll() {
@@ -677,36 +759,51 @@ export function createSky(container, options = {}) {
     let cx = (o.x ?? 0.5) * vw + scroll, cy = (o.y ?? 0.6) * viewH;
     // put it on a real cloud near there: that cloud turns into the shape, and back into itself
     const k = hUnits / img.height, hw = img.silW * k / 2, hh = silH / 2;
-    const found = cloudNear(cx, cy, img.area * k * k, [t0, tMid]);
+    const tEnd = t0 + form + hold + fade, s0 = dir() * N.speed * t0, s1 = dir() * N.speed * tEnd;
+    const fits = 2 * hw + 0.06 < vw;
+    const allowed = [fits ? scroll + hw + 0.03 : scroll + vw / 2, hh + 0.03, fits ? scroll + vw - hw - 0.03 : scroll + vw / 2, viewH - hh - 0.03];
+    const found = cloudNear(o._near ? o._near[0] : cx, o._near ? o._near[1] : cy, img.area * k * k, [t0, tMid, tEnd],
+                            Math.min(s0, s1) - 0.3, Math.max(s0, s1) + vw + 0.3, allowed, [hw, hh]);
     if (found) {
-      cx = 2 * hw + 0.06 < vw ? Math.min(Math.max(found.x, scroll + hw + 0.03), scroll + vw - hw - 0.03) : scroll + vw / 2;
-      cy = Math.min(Math.max(found.y, hh + 0.03), viewH - hh - 0.03);
+      cx = Math.min(Math.max(found.x, allowed[0]), allowed[2]);
+      cy = Math.min(Math.max(found.y, allowed[1]), allowed[3]);
     }
     freeShape();
     shape = { image: img, rect: [cx - wUnits / 2, cy - hUnits / 2, wUnits, hUnits], t0, tMid, form, hold, fade, patch: null, patchReady: false,
-              thick: img.thick, fade_: 0.15 * img.pad * hUnits / img.height };   // blend border: inside the mask's all-zero margin
+              thick: img.thick, fade_: 0.15 * img.pad * hUnits / img.height,   // blend border: inside the mask's all-zero margin
+              density: Math.min(1, Math.max(0, o.density ?? 0.5)), src: found ? found.src : null, cloudAt: found ? [found.x, found.y] : [cx, cy] };
     uploadShape(img);
     redraw();
   }
-  // a map of the near clouds around (x, y) (the most opaque each cell gets at `times`), and the cloud to put
-  // a shape on (findCloud)
-  function cloudNear(x, y, need, times) {
-    const step = 0.02, x0 = x - 0.6, y0 = Math.max(-0.02, y - 0.45), y1 = Math.min(viewH + 0.02, y + 0.45);
-    const gw = Math.trunc(1.2 / step), gh = Math.trunc((y1 - y0) / step);
+  // the cloud to put a shape on (findCloud), from a map of the near clouds over x0..x1 (all that is on screen
+  // while the shape lives) at the moment it starts forming, times[0]; plus a map of that cloud, grown a little
+  // into where it reaches later on (times), so only that cloud gives way
+  function cloudNear(x, y, need, times, x0, x1, allowed, box) {
+    const step = 0.02, y0 = -0.02;
+    const gw = Math.min(400, Math.ceil((x1 - x0) / step)), gh = Math.ceil((viewH + 0.04) / step);
     if (gh <= 4 || !layers[1]) return null;
     const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gw, gh, 0, gl.RGBA, gl.UNSIGNED_BYTE, null); texParams();
     const fb = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
-    const grid = new Uint8Array(gw * gh), px = new Uint8Array(gw * gh * 4);
-    for (const t of times) {
+    const grid = new Uint8Array(gw * gh), later = new Uint8Array(gw * gh), px = new Uint8Array(gw * gh * 4);
+    times.forEach((t, n) => {
       drawClouds(layers[1], fb, gw, gh, x0, y0, t, 0, null, 0, step);
       gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
       gl.readPixels(0, 0, gw, gh, gl.RGBA, gl.UNSIGNED_BYTE, px);   // rows bottom-up
-      for (let i = 0; i < gw * gh; i++) grid[i] = Math.max(grid[i], px[i * 4 + 3]);
-    }
+      for (let i = 0; i < gw * gh; i++) { if (n === 0) grid[i] = px[i * 4 + 3]; later[i] = Math.max(later[i], px[i * 4 + 3]); }
+    });
     gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.deleteFramebuffer(fb); gl.deleteTexture(tex);
-    return findCloud(grid, gw, gh, x0, y0, step, x, y, need, viewH);
+    const best = findCloud(grid, gw, gh, x0, y0, step, x, y, need, allowed, box);
+    if (!best) return null;
+    // where the shape will sit (placeShape clamps it the same way)
+    const cx = Math.min(Math.max(best.x, allowed[0]), allowed[2]), cy = Math.min(Math.max(best.y, allowed[1]), allowed[3]);
+    const mine = sourceCells(best.label, best.comp, later, gw, gh, (cx - x0) / step, (cy - y0) / step, box[0] / step, box[1] / step, step);
+    const mask = new Uint8Array(gw * gh * 4);
+    for (let i = 0; i < gw * gh; i++) mask[i * 4] = mine[i];
+    const src = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, src);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gw, gh, 0, gl.RGBA, gl.UNSIGNED_BYTE, mask); texParams();
+    return { x: cx, y: cy, src: { tex: src, rect: [x0, y0, gw * step, gh * step] } };
   }
   function shapeUniforms(u) {
     const am = shape && shapeTex ? [shapeAmt(simTime), shapeMelt(simTime), shape.thick] : [0, 0, 0];
@@ -775,10 +872,21 @@ export function createSky(container, options = {}) {
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
   // render the shape's live patch for this frame, and drop the shape once it has melted
-  function tendShape() {
+  function tendShape(paint = true) {
     if (!shape) return;
-    if (simTime > shape.t0 + shape.form + shape.hold + shape.fade + 0.5) { freeShape(); return; }
-    paintPatch();
+    if (simTime > shape.t0 + shape.form + shape.hold + shape.fade + 0.5) {
+      // melted: the next waiting shape (showShape with queue) forms on the same cloud
+      lastCloud = shape.cloudAt;
+      freeShape();
+      placeNext();
+      return;
+    }
+    if (paint) paintPatch();
+  }
+  function placeNext() {
+    if (shape || leadBuilding || !shapeQueue.length || !shapeQueue[0].img) return;
+    const next = shapeQueue.shift();
+    placeShape(next.img, { ...next.o, _near: lastCloud });
   }
   // Some browsers hold back requestAnimationFrame for embedded (cross-origin) frames until the user
   // interacts. A timer fallback makes sure a scheduled frame still runs.
@@ -829,7 +937,7 @@ export function createSky(container, options = {}) {
       o = cleanOptions(o);
       const resetup = RESETUP_KEYS.some(k => k in o && o[k] !== S[k]);
       const rebuild = REBUILD_KEYS.some(k => k in o && o[k] !== S[k]);
-      if ('direction' in o && o.direction !== S.direction) { shapeTicket++; freeShape(); }   // a placed shape belongs to the old drift
+      if ('direction' in o && o.direction !== S.direction) { shapeTicket++; shapeQueue = []; freeShape(); }   // a placed shape belongs to the old drift
       Object.assign(S, o);
       if (resetup) needsSetup = true;
       else if (rebuild && layers[0]?.snaps) needsRebuild = true;
@@ -847,27 +955,34 @@ export function createSky(container, options = {}) {
       redraw(false);
     },
     /**
-     * The clouds nearby drift in and gather into a shape, hold it, then melt back into ordinary
-     * clouds while drifting. { text } or { image: HTMLImageElement | canvas | url }, plus optional
-     * x, y (0..1 of the view, centre), size (0..1 of the view height), form, hold, fade (seconds).
-     * Needs speed > 0: shapes form as the sky moves on.
+     * A real cloud near (x, y) reshapes into a shape, holds it, then reshapes back into itself.
+     * { text } or { image: HTMLImageElement | canvas | url }, plus optional x, y (0..1 of the view,
+     * centre), size (0..1 of the view height), form, hold, fade (seconds), density (0..1, 0.5 = like the
+     * clouds around). queue: true waits for the current shape to melt and forms on the same cloud
+     * (word, cloud, next word, cloud, ...). Needs speed > 0: shapes form as the sky moves on.
      */
     async showShape(o) {
       let src = o.text;
       if (o.image) src = typeof o.image === 'string' ? await loadImage(o.image) : o.image;
       if (!src || !layers[0]?.snaps) return;
-      const ticket = ++shapeTicket;               // a newer showShape or a clearShape wins
-      const img = await buildShapeImage(src);
+      const queued = !!o.queue && (!!shape || shapeQueue.length > 0 || leadBuilding > 0);
+      const slot = queued ? { img: null, o } : null;
+      if (slot) shapeQueue.push(slot);                       // keeps call order while the images build
+      else { shapeTicket++; shapeQueue = []; leadBuilding++; }
+      const ticket = shapeTicket;                            // a newer showShape or a clearShape wins
+      let img;
+      try { img = await buildShapeImage(src); } finally { if (!slot) leadBuilding--; }
       if (ticket !== shapeTicket || destroyed || !layers[0]?.snaps) return;
-      placeShape(img, o);
+      if (slot) { slot.img = img; placeNext(); } else { placeShape(img, o); placeNext(); }
     },
-    clearShape() { shapeTicket++; freeShape(); },
+    clearShape() { shapeTicket++; shapeQueue = []; freeShape(); },
     /** Testing aid: fast-forward sky time as if `seconds` passed at 30 fps, then draw. */
     _step(seconds) {
       if (!layers[0]?.snaps) return;
       for (let i = 0, n = Math.round(seconds * 30); i < n; i++) {
         const sdt = effectiveSpeed() / 30; simTime += sdt; updatePlanes(sdt);
         for (const L of layers) advance(L);
+        tendShape(false);                          // a shape that has melted makes way for the next, as frames would
       }
       tendShape();
       composite();

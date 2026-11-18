@@ -18,7 +18,7 @@ import { createSky } from './web/src/sky.js';   // or 'sky-kit' once installed
 
 const sky = createSky(document.querySelector('#hero'), { coverage: 0.6 });
 sky.set({ palette: 'pastel', speed: 2 });   // change anything live
-sky.showShape({ text: 'hello' });           // nearby clouds gather into "hello", hold, then melt back
+sky.showShape({ text: 'hello' });           // a nearby cloud turns into "hello", holds it, then turns back
 sky.flyPlane();
 sky.destroy();
 ```
@@ -62,9 +62,9 @@ Props are the options below; changing a prop updates the sky live, and removing 
 | `trailLife` | `40` | seconds a contrail lingers |
 | `respectReducedMotion` | `true` | hold still when the user prefers reduced motion |
 
-Methods: `set(options)`, `pause()`, `play()`, `flyPlane({ from, to }?)`, `showShape({ text | image, x, y, size, form, hold, fade })`, `clearShape()`, `snapshot()` (PNG data URL), `destroy()`.
+Methods: `set(options)`, `pause()`, `play()`, `flyPlane({ from, to }?)`, `showShape({ text | image, x, y, size, form, hold, fade, density, queue })`, `clearShape()`, `snapshot()` (PNG data URL), `destroy()`.
 
-`showShape` accepts text/emoji or an image (URL, `<img>`, canvas): transparent images use their alpha, opaque ones use dark = shape. It is put on a real cloud near `x, y`, which reshapes into it over `form` seconds (default 5); it holds (5); then it reshapes back into that cloud (7), which stays.
+`showShape` accepts text/emoji or an image (URL, `<img>`, canvas): transparent images use their alpha, opaque ones use dark = shape. It is put on a real cloud near `x, y`, which reshapes into it over `form` seconds (default 5); it holds (5); then it reshapes back into that cloud (7), which stays. `density` (0–1, default 0.5 = like the clouds around) makes the finished shape wispier or more solid. `queue: true` waits for the current shape to melt and then forms on a cloud near it, so `showShape({ text: 'one' })` followed by `showShape({ text: 'two', queue: true })` gives word, cloud, next word, cloud.
 
 ### Examples
 
@@ -96,7 +96,7 @@ struct ContentView: View {
 }
 ```
 
-`SkyOptions` has the same names and defaults as the web options (`speed`, `coverage`, `shadow`, `cloudScale`, `direction`, `seed`, `palette`, `colors`, `gradient`, `quality`, `fps`, `planes`, `trailLife`, `respectReducedMotion`). Changing the value updates the sky live. `SkyController` sends planes (`flyPlane()`), forms shapes (`showShape(.text("hi"))` or `.image(cgImage)`) and renders stills (`snapshot(width:height:)`). The view stops drawing when nothing moves (speed 0 or Reduce Motion) and wakes up when something changes.
+`SkyOptions` has the same names and defaults as the web options (`speed`, `coverage`, `shadow`, `cloudScale`, `direction`, `seed`, `palette`, `colors`, `gradient`, `quality`, `fps`, `planes`, `trailLife`, `respectReducedMotion`). Changing the value updates the sky live. `SkyController` sends planes (`flyPlane()`), forms shapes (`showShape(.text("hi"))` or `.image(cgImage)`, with the same `form`, `hold`, `fade`, `density` and `queue` settings) and renders stills (`snapshot(width:height:)`). The view stops drawing when nothing moves (speed 0 or Reduce Motion) and wakes up when something changes.
 
 Also included:
 
@@ -120,7 +120,7 @@ Shapes: `sky-render --seconds 4.5 --heart --out out/swift-heart-4.5.png` and `pa
 
 - WebGL2 is required on the web (all current browsers have it).
 - Shapes form as the sky moves; with `speed: 0` they don't appear.
-- One shape at a time; a new one replaces the previous.
+- One shape at a time; a new one replaces the previous, unless it is queued (`queue: true`).
 - Noise coordinates keep growing with sky time. After several days of continuous running at speed 1 the cloud shading could start to get grainy (float precision). Not a concern for normal sessions.
 
 ## Layout

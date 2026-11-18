@@ -62,7 +62,8 @@ static float3 skyAt(float v, constant SkyColors& c) {
 // a = (win0.x, win0.y, unitsPerPixel, viewH)   b = (morph, scale, coverage, shadow)
 // c = (haze, farMask, seed.x, seed.y)           d = (target height in pixels, shape forming 0..1, melting 0..1, thickness)
 // shapeRect = cloud-space (x0, y0, width, height) of the shape image
-struct CloudParams { float4 a; float4 b; float4 c; float4 d; float4 shapeRect; SkyColors sky; };
+// srcRect = cloud-space (x0, y0, width, height) of the map of the cloud the shape is made from; e = (density, 0, 0, 0)
+struct CloudParams { float4 a; float4 b; float4 c; float4 d; float4 shapeRect; SkyColors sky; float4 srcRect; float4 e; };
 
 // ---- shapes (the mask texture has top-down rows, so it is sampled at 1 - y)
 // A shape is part of the same cloud field: while it is on screen the near clouds over its wide area
@@ -85,16 +86,25 @@ static float4 shapeAt(float2 p, constant CloudParams& P, texture2d<float> shape)
     constexpr sampler s(filter::linear, address::clamp_to_edge);
     return shape.sample(s, float2(su.x, 1.0 - su.y));
 }
+// the cloud the shape is made from: 1 on it (its map has bottom-up rows), so only that cloud gives way
+static float srcAt(float2 p, constant CloudParams& P, texture2d<float> src) {
+    float2 su = (p - P.srcRect.xy) / P.srcRect.zw;
+    if (su.x < 0.0 || su.y < 0.0 || su.x > 1.0 || su.y > 1.0) return 0.0;
+    constexpr sampler s(filter::linear, address::clamp_to_edge);
+    return src.sample(s, su).r;
+}
 static float smax(float a, float b, float k) { float h = clamp(0.5 + 0.5 * (a - b) / k, 0.0, 1.0); return mix(b, a, h) + k * h * (1.0 - h); }
 static float smin(float a, float b, float k) { return -smax(-a, -b, k); }
 static float2 gatherFrom(float2 p, constant CloudParams& P, texture2d<float> shape, thread float2& toward) { toward = float2(0.0); return p; }   // (shapes no longer pull clouds in)
 // v: the near clouds' density here; p: position. The shape sits on a real cloud and that cloud reshapes
 // into it: first where the cloud is, then outward from it. Melting runs it back, so the shape turns into
 // the same cloud again, which stays (and keeps drifting and changing like the others).
-static float withShape(float v, float2 p, float thr, float bil, float2 so, bool lite, constant CloudParams& P, texture2d<float> shape) {
+static float withShape(float v, float2 p, float thr, float bil, float2 so, bool lite, constant CloudParams& P, texture2d<float> shape, texture2d<float> srcMap, thread float& own) {
+    own = 0.0;                                                        // how much of the density here is the shape's
     if (P.d.y <= 0.0) return v;
     float4 m = shapeAt(p, P, shape);
-    if (m.y <= 0.0) return v;
+    float src = srcAt(p, P, srcMap);
+    if (m.y <= 0.0 && src <= 0.0) return v;
     float t = P.d.w;
     float form = P.d.y * (1.0 - P.d.z);                       // rises while forming, falls while melting
     float cloudy = smoothstep(thr - 0.25, thr + 0.1, v);              // 1 on the cloud
@@ -104,46 +114,55 @@ static float withShape(float v, float2 p, float thr, float bil, float2 so, bool 
     // the shape's own cloud: its outline wobbles at puff scale (stroke width varies like a lumpy cloud);
     // bumps about a letter-stroke wide; solid shapes also get a domed body (densest in the middle, so it
     // shades round) and cauliflower lumps that shape the outline
-    float2 wob = lite ? float2(0.0) : float2(fbm(p * 6.5 + float2(2.3, 8.9), 2), fbm(p * 6.5 + float2(7.7, 1.3), 2)) * mix(0.025, 0.06, t);
-    float4 ms = shapeAt(p + wob, P, shape);
-    float R = ms.x, fill = thr - 0.3;
-    if (R > 0.001) {
-      float lumps = lite ? 0.0 : fbm(p * 5.5 + float2(5.1, 7.3), 3);
-      float big = lite ? 0.0 : fbm(p * 9.0 + float2(3.7, 1.9), 3);
-      float small = lite ? 0.0 : fbm(p * 26.0 + float2(8.1, 2.3), 2);
-      fill = thr + (R - 0.5) * mix(0.5, 0.45, t) + ((ms.z - 0.5) * 0.3 + lumps * 0.3 + 0.05) * t
-           + big * mix(0.3, 0.15, t) + small * mix(0.15, 0.05, t) + (bil - 0.35) * 0.2;
-      fill += clamp(v - thr, -0.3, 0.3) * 0.25;                       // thicker where the cloud is thick
-      fill = mix(thr - 0.3, fill, smoothstep(0.0, 0.1, R));
+    float R = 0.0, fill = thr - 0.3;
+    if (m.y > 0.0) {
+      float2 wob = lite ? float2(0.0) : float2(fbm(p * 6.5 + float2(2.3, 8.9), 2), fbm(p * 6.5 + float2(7.7, 1.3), 2)) * mix(0.025, 0.06, t);
+      float4 ms = shapeAt(p + wob, P, shape);
+      R = ms.x;
+      if (R > 0.001) {
+        float lumps = lite ? 0.0 : fbm(p * 5.5 + float2(5.1, 7.3), 3);
+        float big = lite ? 0.0 : fbm(p * 9.0 + float2(3.7, 1.9), 3);
+        float small = lite ? 0.0 : fbm(p * 26.0 + float2(8.1, 2.3), 2);
+        fill = thr + (R - 0.5) * mix(0.5, 0.45, t) + ((ms.z - 0.5) * 0.3 + lumps * 0.3 + 0.05) * t
+             + big * mix(0.3, 0.15, t) + small * mix(0.15, 0.05, t) + (bil - 0.35) * 0.2;
+        fill += clamp(v - thr, -0.3, 0.3) * 0.25 + (P.e.x - 0.5) * mix(0.2, 0.35, step(0.5, P.e.x));   // thicker where the cloud is thick; overall density
+        fill = mix(thr - 0.3, fill, smoothstep(0.0, 0.1, R));
+      }
     }
-    // the cloud's density becomes the shape's (near the shape, where the shape isn't, the cloud gives way)
-    return mix(v, fill, S * max(m.y, smoothstep(0.0, 0.1, R)));
+    // the shape replaces the cloud it is made from, which thins out evenly (so it shrinks along its own puffy
+    // edges) while the shape grows puff by puff; any other cloud it touches is only added to, never cut into
+    src = smoothstep(0.1, 0.9, src + 0.35 * (rag - 0.5));             // where it fades out, a puffy edge
+    float w = max(S * smoothstep(0.0, 0.1, R), smoothstep(0.05, 0.85, form + 0.1 * (rag - 0.5)) * src);
+    own = w * max(src, smoothstep(-0.05, 0.05, fill - v));
+    return mix(v, mix(max(v, fill), fill, src), w);
 }
 
-static float2 cumulus(float2 p, float2 pg, float2 so, float scale, float2 seed, float cov, float morph, constant CloudParams& P, texture2d<float> shape) {
+static float3 cumulus(float2 p, float2 pg, float2 so, float scale, float2 seed, float cov, float morph, constant CloudParams& P, texture2d<float> shape, texture2d<float> srcMap) {
     float2 q = pg * float2(2.2, 3.4) / scale + seed;
     float2 w = float2(fbm(q * 0.5 + morph, 3), fbm(q * 0.5 + 5.2 - morph, 3));
     float base = fbm(q * 0.7 + w * 0.6, 4);
     float bil = billow(q * 2.0 + w, 3);
     float thr = mix(0.22, -0.12, cov);
-    float v = withShape(base + 0.15 * (bil - 0.35), p, thr, bil, so, false, P, shape);
+    float own;
+    float v = withShape(base + 0.15 * (bil - 0.35), p, thr, bil, so, false, P, shape, srcMap, own);
     float4 m = P.d.y > 0.0 ? shapeAt(p + so, P, shape) : float4(0.0);   // follows the shape as it spreads out
     // a shape's rim fades out slowly like other clouds' edges (more for solid shapes); the outline stays put
-    float rim = smoothstep(0.0, 0.3, m.y) * (1.0 - 0.6 * smoothstep(0.35, 0.8, m.x)) * mix(0.6, 1.0, P.d.w) * smoothstep(0.0, 0.5, P.d.y) * (1.0 - smoothstep(0.2, 0.6, P.d.z));
+    float rim = own * (1.0 - 0.6 * smoothstep(0.35, 0.8, m.x)) * mix(0.6, 1.0, P.d.w) * smoothstep(0.0, 0.5, P.d.y) * (1.0 - smoothstep(0.2, 0.6, P.d.z));
     float D = smoothstep(thr, thr + 0.22 + 0.55 * rim, v);
     float dome = smoothstep(thr, thr + 0.7, v);
-    float inShape = m.x * smoothstep(0.0, 0.5, P.d.y) * (1.0 - P.d.z);   // softer fine texture inside a shape
-    return float2(D, (0.05 * dome + 0.012 * D * bil * (1.0 - 0.5 * inShape)) * scale);
+    float inShape = m.x * own;                                        // softer fine texture inside a shape
+    return float3(D, (0.05 * dome + 0.012 * D * bil * (1.0 - 0.5 * inShape)) * scale, own);
 }
-static float cumulusLite(float2 p, float2 pg, float2 so, float scale, float2 seed, float cov, float morph, constant CloudParams& P, texture2d<float> shape) {
+static float cumulusLite(float2 p, float2 pg, float2 so, float scale, float2 seed, float cov, float morph, constant CloudParams& P, texture2d<float> shape, texture2d<float> srcMap) {
     float2 q = pg * float2(2.2, 3.4) / scale + seed;
     float2 w = float2(fbm(q * 0.5 + morph, 2), fbm(q * 0.5 + 5.2 - morph, 2));
     float thr = mix(0.22, -0.12, cov);
-    float v = withShape(fbm(q * 0.7 + w * 0.6, 3), p, thr, 0.35, so, true, P, shape);
+    float own;
+    float v = withShape(fbm(q * 0.7 + w * 0.6, 3), p, thr, 0.35, so, true, P, shape, srcMap, own);
     return smoothstep(thr, thr + 0.22, v);
 }
 
-fragment float4 sky_cloud(VOut in [[stage_in]], constant CloudParams& P [[buffer(0)]], texture2d<float> shape [[texture(0)]]) {
+fragment float4 sky_cloud(VOut in [[stage_in]], constant CloudParams& P [[buffer(0)]], texture2d<float> shape [[texture(0)]], texture2d<float> srcMap [[texture(1)]]) {
     const float3 LIT = float3(1.0, 0.98, 0.94), SHADE = float3(0.635, 0.722, 0.902), RIM = float3(1.0, 0.925, 0.8);
     const float3 L = float3(-0.50, 0.70, 0.52);
     float2 frag = float2(in.pos.x, P.d.x - in.pos.y);
@@ -157,7 +176,7 @@ fragment float4 sky_cloud(VOut in [[stage_in]], constant CloudParams& P [[buffer
     float2 toward;
     float2 pg = gatherFrom(p, P, shape, toward), dg = pg - p;         // same nudge for the shadow samples
     float2 so = toward * mix(0.07, 0.13, P.d.w) * smoothstep(0.1, 0.8, P.d.z);   // melting: its pieces drift outward
-    float2 D0 = cumulus(p, pg, so, scale, seed, cov, P.b.x, P, shape);
+    float3 D0 = cumulus(p, pg, so, scale, seed, cov, P.b.x, P, shape, srcMap);
     float alpha = smoothstep(0.0, 0.61, D0.x);
     float2 grad = float2(dfdx(D0.y), -dfdy(D0.y)) / upp;
     if (alpha < 0.002) return float4(0.0);
@@ -169,11 +188,11 @@ fragment float4 sky_cloud(VOut in [[stage_in]], constant CloudParams& P [[buffer
     s = mix(s, (floor(f) + smoothstep(0.4, 0.6, fract(f))) / 2.0, 0.3);
     float3 c = mix(SHADE, LIT, s);
     float occ = 0.0;
-    for (int i = 1; i <= 4; i++) { float2 ps = p + L2 * 0.028 * float(i) * scale; occ += cumulusLite(ps, ps + dg, so, scale, seed, cov, P.b.x, P, shape); }
+    for (int i = 1; i <= 4; i++) { float2 ps = p + L2 * 0.028 * float(i) * scale; occ += cumulusLite(ps, ps + dg, so, scale, seed, cov, P.b.x, P, shape, srcMap); }
     c = mix(c, SHADE, smoothstep(0.35, 0.95, occ / 4.0) * P.b.w);
     c = mix(c, SHADE, smoothstep(0.45, 1.0, D0.x) * 0.2 * P.b.w * (1.0 - s));
     // a shape is thin, so it barely shades itself: give its body the tone a big cloud's body has
-    if (P.d.y > 0.0) c = mix(c, SHADE, shapeAt(p + so, P, shape).x * smoothstep(0.0, 0.5, P.d.y) * (1.0 - P.d.z) * 0.7 * P.b.w);
+    if (P.d.y > 0.0) c = mix(c, SHADE, shapeAt(p + so, P, shape).x * D0.z * 0.7 * P.b.w);
     float edge = 1.0 - smoothstep(0.0, 0.3, D0.x);
     float facing = clamp(dot(normalize(n.xy + 1e-5), L2), 0.0, 1.0);
     c += RIM * edge * facing * 0.45;

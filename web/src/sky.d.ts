@@ -44,10 +44,14 @@ export interface ShapeOptions {
   y?: number;
   /** Height of the shape as a fraction of the view height. Default 0.32. */
   size?: number;
-  /** Seconds to gather, hold, and melt back into ordinary clouds. Default 5, 5, 7. */
+  /** Seconds for a nearby cloud to turn into the shape, to hold it, and to turn back. Default 5, 5, 7. */
   form?: number;
   hold?: number;
   fade?: number;
+  /** How dense the finished shape is, 0..1. Default 0.5 (like the clouds around). */
+  density?: number;
+  /** Wait for the current shape to melt, then form on a cloud near it (word, cloud, next word, ...). Default false. */
+  queue?: boolean;
 }
 
 export interface PlaneOptions {

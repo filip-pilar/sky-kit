@@ -14,10 +14,11 @@ public final class SkyController: ObservableObject {
 
     /// Send a plane across. Points are 0…1 of the view with y = 0 at the bottom; nil = from a random side.
     public func flyPlane(from: CGPoint? = nil, to: CGPoint? = nil) { renderer?.flyPlane(from: from, to: to); wake?() }
-    /// The clouds nearby drift in and gather into a shape, hold it, then melt back. Needs speed > 0.
+    /// A real cloud nearby reshapes into a shape, holds it, then reshapes back into itself. density 0…1
+    /// (0.5 = like the clouds around); queue: form after the current shape has melted, on the same cloud. Needs speed > 0.
     public func showShape(_ source: SkyShapeSource, x: Double = 0.5, y: Double = 0.6, size: Double = 0.32,
-                          form: Double = 5, hold: Double = 5, fade: Double = 7) {
-        renderer?.showShape(source, x: x, y: y, size: size, form: form, hold: hold, fade: fade)
+                          form: Double = 5, hold: Double = 5, fade: Double = 7, density: Double = 0.5, queue: Bool = false) {
+        renderer?.showShape(source, x: x, y: y, size: size, form: form, hold: hold, fade: fade, density: density, queue: queue)
         wake?()
     }
     public func clearShape() { renderer?.clearShape() }
