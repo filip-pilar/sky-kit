@@ -58,6 +58,10 @@ while !args.isEmpty {
 }
 
 do {
+    // testing aids: SKY_PARK="travel,morph" holds the picked clouds there; SKY_BOXES=1 prints their boxes
+    if let park = ProcessInfo.processInfo.environment["SKY_PARK"]?.split(separator: ",").compactMap({ Double($0) }), park.count == 2 {
+        SkyRenderer.debugParkCopies = SIMD2(park[0], park[1])
+    }
     let renderer = try SkyRenderer(options: opts)
     let start = Date()
     let image = try renderer.renderImage(width: width, height: height, pixelsPerPoint: scale, seconds: seconds) { r in
@@ -69,6 +73,11 @@ do {
     guard let dest = CGImageDestinationCreateWithURL(url as CFURL, "public.png" as CFString, 1, nil) else { throw SkyRenderer.RendererError.readback }
     CGImageDestinationAddImage(dest, image, nil)
     guard CGImageDestinationFinalize(dest) else { throw SkyRenderer.RendererError.readback }
+    if ProcessInfo.processInfo.environment["SKY_BOXES"] == "1" {
+        for b in renderer.debugCopyBoxes() {
+            print("box home \(Int(b.home.minX)) \(Int(b.home.minY)) \(Int(b.home.width)) \(Int(b.home.height)) now \(Int(b.now.minX)) \(Int(b.now.minY))")
+        }
+    }
     print("wrote \(out) (\(width)×\(height), \(seconds)s of sky time) in \(String(format: "%.2f", Date().timeIntervalSince(start)))s")
 } catch {
     FileHandle.standardError.write("sky-render failed: \(error)\n".data(using: .utf8)!)
