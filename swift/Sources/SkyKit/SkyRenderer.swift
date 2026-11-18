@@ -298,7 +298,7 @@ public final class SkyRenderer {
             if a > 0, mt < 1 {
                 let scroll = dir * layers[1].def.speed * simTime   // subtracted in double precision
                 mask = SIMD4(Float(sh.rect.x - scroll), Float(sh.rect.y), Float(sh.rect.z), Float(sh.rect.w))
-                shapeAM = SIMD4(Float(a), Float(mt), 0, 0)
+                shapeAM = SIMD4(Float(a), Float(mt), Float(sh.thickness), 0)
             }
         }
         var p = CompositeParams(

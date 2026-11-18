@@ -64,7 +64,7 @@ Props are the options below; changing a prop updates the sky live, and removing 
 
 Methods: `set(options)`, `pause()`, `play()`, `flyPlane({ from, to }?)`, `showShape({ text | image, x, y, size, form, hold, fade })`, `clearShape()`, `snapshot()` (PNG data URL), `destroy()`.
 
-`showShape` accepts text/emoji or an image (URL, `<img>`, canvas): transparent images use their alpha, opaque ones use dark = shape. The clouds of a wide area around it drift in, shrink and become part of it over `form` seconds (default 5); it holds (5); then it breaks into small pieces that shrink away while the clouds around come back (7). It drifts with the clouds and is placed so it sits at `x, y` in the middle of its hold; it shrinks to fit 70% of the view width on narrow screens. Shapes form as the sky moves, so they need `speed > 0`.
+`showShape` accepts text/emoji or an image (URL, `<img>`, canvas): transparent images use their alpha, opaque ones use dark = shape. The clouds around it drift in and give it some of themselves over `form` seconds (default 5), so the sky stays cloudy; it holds (5); then it breaks into small pieces that shrink away while the clouds around come back (7). It drifts with the clouds and is placed so it sits at `x, y` in the middle of its hold; it shrinks to fit 70% of the view width on narrow screens. Shapes form as the sky moves, so they need `speed > 0`.
 
 ### Examples
 

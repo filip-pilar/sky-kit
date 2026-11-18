@@ -123,6 +123,7 @@ vec4 shapeAt(vec2 p){
   return texture(uShape, su);
 }
 float smax(float a, float b, float k){ float h = clamp(0.5 + 0.5 * (a - b) / k, 0.0, 1.0); return mix(b, a, h) + k * h * (1.0 - h); }
+float smin(float a, float b, float k){ return -smax(-a, -b, k); }
 // where to read the surrounding cloud from: further out, so the clouds of the wide area drift in toward
 // the shape while it forms (and back out while it melts). The drift is a smooth, wide field, so the
 // clouds move rather than stretch; by the time the shape holds, the sky that moved in has been emptied.
@@ -138,7 +139,7 @@ vec2 gatherFrom(vec2 p, out vec2 toward){
                    texture(uShape, su + vec2(0.0, e.y)).a - texture(uShape, su - vec2(0.0, e.y)).a) / 0.16;
   toward = grad / max(length(grad), 0.3);
   // it relaxes as the clouds are given back while melting (so they come back where they were, unsquashed)
-  float pull = 0.15 * uShapeAmt * (1.0 - smoothstep(-0.25, 0.1, F - (1.25 - uShapeMelt * 1.55)))
+  float pull = 0.07 * uShapeAmt * (1.0 - smoothstep(-0.25, 0.1, F - (1.25 - uShapeMelt * 1.55)))
              * smoothstep(0.03, 0.8, F) * (1.0 - smoothstep(0.5, 1.0, F));
   return p - toward * pull;
 }
@@ -152,36 +153,43 @@ float withShape(float v, vec2 p, float thr, float bil, vec2 so, bool lite){
   float a = uShapeAmt, mt = uShapeMelt, F = m.w, t = uShapeThick;
   float touch = smoothstep(thr - 0.2, thr + 0.1, v);                // 1 inside or right next to existing cloud
   float edge = smoothstep(0.0, 0.25, F);                            // fades the effect out toward the wide area's edge
-  // The surrounding cloud. Forming: every cloud of the wide area gives some of itself to the shape, more
-  // the closer it is: it drifts in (gatherFrom) and shrinks, and right around the shape it is used up.
-  // Cloud that drifts over the shape is cut to it and becomes part of it. Melting: the clouds come back
-  // from the shape outward (a ragged front), a little thicker where the shape's pieces reach them.
+  // The surrounding cloud. Forming: the clouds around give the shape what it needs and no more (a word
+  // takes a little, mostly from clouds near it; a solid shape more): they drift in a little (gatherFrom)
+  // and shrink, and the sky stays cloudy. Close to the shape, whatever cloud is there turns into thin
+  // wisps (dense cloud thins so the shape stays readable, faint cloud thickens a little), so the shape's
+  // soft outskirts are made of the sky's own clouds. Melting: the clouds come back from the shape outward
+  // (a ragged front), a little thicker where the shape's pieces reach them.
   float ragged = lite ? 0.0 : fbm(p * 3.0 + vec2(17.1, 3.3), 2) * 0.5;
   float front = F - (1.25 - mt * 1.55) + ragged;                    // > 0: given back already
   float kept = (1.0 - smoothstep(0.0, 0.25, front)) * (1.0 - smoothstep(0.7, 1.0, mt));
-  float wide = edge * (0.35 + 0.65 * F) * 0.45 * smoothstep(0.1, 0.95, a);
-  float used = smoothstep(0.55, 0.95, F) * smoothstep(0.35, 0.95, a) * 0.4;   // in step with the shape growing
-  float cut = m.y * smoothstep(0.0, 0.5, a) * 0.6;                  // around the shape's outline
+  float take = mix(0.4, 1.0, t);                                   // how much cloud the shape needs
+  float wide = edge * F * F * 0.2 * take * smoothstep(0.1, 0.95, a);
+  float used = smoothstep(0.7, 0.98, F) * smoothstep(0.35, 0.95, a) * 0.3 * take;   // in step with the shape growing
   float outside = 1.0 - smoothstep(0.3, 0.65, m.x);                 // (cloud over the shape itself stays)
   float dq = (front - 0.12) / 0.15;
   float swell = edge * 0.1 * exp(-dq * dq) * smoothstep(0.0, 0.15, mt) * (1.0 - smoothstep(0.7, 1.0, mt))
               * smoothstep(thr - 0.12, thr + 0.05, v);              // only clouds that are there get thicker
   // a cloud that gives itself up shrinks rather than turning see-through: its edge gets a little sharper
-  float thin = (wide + used + cut) * outside * kept;
+  float thin = (wide + used) * outside * kept;
   float amb = thr + (v - thin - thr) / (1.0 - 0.45 * min(thin / 0.85, 1.0)) + swell;
+  float wisp = m.y * outside * smoothstep(0.0, 0.6, a) * kept;
+  amb = mix(amb, smin(amb + 0.12, thr + 0.06, 0.08), wisp);
   // The shape's own cloud: bumps about a letter-stroke wide; solid shapes also get a domed body (densest
   // in the middle, so it shades round) and cauliflower lumps that shape the outline.
-  vec4 ms = mt > 0.0 ? shapeAt(p + so) : m;                     // melting: its pieces drift outward
+  // its outline wobbles at puff scale (stroke width varies like a lumpy cloud); melting, its pieces drift outward
+  vec2 wob = (lite || m.y <= 0.0) ? vec2(0.0) : vec2(fbm(p * 6.5 + vec2(2.3, 8.9), 2), fbm(p * 6.5 + vec2(7.7, 1.3), 2)) * mix(0.025, 0.06, t);
+  vec4 ms = (mt > 0.0 || m.y > 0.0) ? shapeAt(p + so + wob) : m;
   float R = ms.x;
   if (R <= 0.001) return amb;
   float B = ms.z;
   float lumps = lite ? 0.0 : fbm(p * 5.5 + vec2(5.1, 7.3), 3);
   float big = lite ? 0.0 : fbm(p * 9.0 + vec2(3.7, 1.9), 3);
   float small = lite ? 0.0 : fbm(p * 26.0 + vec2(8.1, 2.3), 2);
-  float fill = thr + (R - 0.5) * mix(0.6, 0.45, t) + ((B - 0.5) * 0.3 + lumps * 0.3 + 0.05) * t
+  float fill = thr + (R - 0.5) * mix(0.5, 0.45, t) + ((B - 0.5) * 0.3 + lumps * 0.3 + 0.05) * t
              + big * mix(0.3, 0.15, t) + small * mix(0.15, 0.05, t) + (bil - 0.35) * 0.2;
   // melting: it breaks into pieces (whole puffs: stroke-sized for text, bigger for solid shapes), which
   // shrink and are gone by about three quarters of the way
+  fill += clamp(v - thr, -0.3, 0.3) * 0.25;                      // thicker where the sky is cloudy, thinner where clear
   float br = smoothstep(0.0, 0.45, mt);
   fill += (mix(big, lumps, t) * 0.45 - 0.1) * br - mt * 0.25 - mt * mt * mt * 0.5;
   fill = thr + (fill - thr) / (1.0 - 0.4 * br);                     // the pieces shrink rather than turn see-through
@@ -202,8 +210,8 @@ vec2 cumulus(vec2 p, vec2 pg, vec2 so, float scale, vec2 seed, float cov, float 
   float v = withShape(base + 0.15 * (bil - 0.35), p, thr, bil, so, false);
   vec4 m = uShapeAmt > 0.0 ? shapeAt(p + so) : vec4(0.0);          // follows the shape as it spreads out
   // a shape's rim fades out slowly like other clouds' edges (more for solid shapes); the outline stays put
-  float rim = smoothstep(0.0, 0.3, m.y) * (1.0 - smoothstep(0.35, 0.8, m.x)) * mix(0.35, 1.0, uShapeThick) * smoothstep(0.0, 0.5, uShapeAmt) * (1.0 - smoothstep(0.2, 0.6, uShapeMelt));
-  float D = smoothstep(thr, thr + 0.22 + 0.35 * rim, v);
+  float rim = smoothstep(0.0, 0.3, m.y) * (1.0 - 0.6 * smoothstep(0.35, 0.8, m.x)) * mix(0.6, 1.0, uShapeThick) * smoothstep(0.0, 0.5, uShapeAmt) * (1.0 - smoothstep(0.2, 0.6, uShapeMelt));
+  float D = smoothstep(thr, thr + 0.22 + 0.55 * rim, v);
   float dome = smoothstep(thr, thr + 0.7, v);
   float inShape = m.x * smoothstep(0.0, 0.5, uShapeAmt) * (1.0 - uShapeMelt);   // softer fine texture inside a shape
   return vec2(D, (0.05 * dome + 0.012 * D * bil * (1.0 - 0.5 * inShape)) * scale);
@@ -238,6 +246,8 @@ void main(){
   for (int i = 1; i <= 4; i++){ vec2 ps = p + L2 * 0.028 * float(i) * uScale; occ += cumulusLite(ps, ps + dg, so, uScale, uSeed, cov, uMorph); }
   c = mix(c, SHADE, smoothstep(0.35, 0.95, occ / 4.0) * uShadow);
   c = mix(c, SHADE, smoothstep(0.45, 1.0, D0.x) * 0.2 * uShadow * (1.0 - s));
+  // a shape is thin, so it barely shades itself: give its body the tone a big cloud's body has
+  if (uShapeAmt > 0.0) c = mix(c, SHADE, shapeAt(p + so).x * smoothstep(0.0, 0.5, uShapeAmt) * (1.0 - uShapeMelt) * 0.7 * uShadow);
   float edge = 1.0 - smoothstep(0.0, 0.3, D0.x);
   float facing = clamp(dot(normalize(n.xy + 1e-5), L2), 0.0, 1.0);
   c += RIM * edge * facing * 0.45;
@@ -262,7 +272,7 @@ uniform float uPatchOn, uPatchFade;   // patch present; width of its blend borde
 uniform vec2 uPatchUV;         // the part of the patch texture that holds this frame's clouds
 uniform sampler2D uMask;       // the shape's mask (A = the wide area), so the far clouds can take part
 uniform vec4 uMaskView;        // view-relative x0, y0, width, height of the whole mask
-uniform vec2 uShapeAM;         // forming and melting progress (0, 0 = no shape)
+uniform vec3 uShapeAM;         // forming and melting progress (0, 0 = no shape), thickness
 out vec4 outColor;
 ${COMMON}
 // The far clouds take part in a shape too: they fade where the near clouds give themselves to the shape
@@ -278,9 +288,10 @@ float farFade(vec2 p){
   // snapshots squeezes their clouds into streaks) and no ragged front (cheap)
   float edge = smoothstep(0.0, 0.25, F);
   float kept = (1.0 - smoothstep(0.0, 0.25, F - (1.25 - mt * 1.55))) * (1.0 - smoothstep(0.7, 1.0, mt));
-  float wide = edge * (0.35 + 0.65 * F) * 0.45 * smoothstep(0.1, 0.95, a);
-  float used = smoothstep(0.55, 0.95, F) * smoothstep(0.35, 0.95, a) * 0.4;   // in step with the shape growing
-  return clamp((wide + used) * kept * 1.3, 0.0, 1.0);
+  float take = mix(0.4, 1.0, uShapeAM.z);
+  float wide = edge * F * F * 0.2 * take * smoothstep(0.1, 0.95, a);
+  float used = smoothstep(0.7, 0.98, F) * smoothstep(0.35, 0.95, a) * 0.3 * take;
+  return clamp((wide + used) * kept * 0.6, 0.0, 1.0);             // gently: fading the background reads as ghostly
 }
 vec4 layerAt(sampler2D A, sampler2D B, vec4 w, vec2 p){
   float vy = p.y / uViewH;
@@ -634,7 +645,8 @@ export function createSky(container, options = {}) {
   // The mask is built at 100 px per silhouette height (it is heavily blurred anyway; radii below are for
   // 220 px, scaled); it yields between steps so the sky keeps animating meanwhile.
   const MASK_PX = 100, MS = MASK_PX / 220;
-  const breathe = () => new Promise(r => setTimeout(r, 0));
+  // a message, not a timer: background tabs hold timers back (up to a minute), and timers have a 4 ms minimum
+  const breathe = () => new Promise(r => { const c = new MessageChannel(); c.port1.onmessage = () => { c.port1.close(); r(); }; c.port2.postMessage(0); });
   async function buildShapeImage(src) {
     const sil = silhouette(src, MASK_PX);
     const pad = Math.round(sil.height * 2.2);       // room for the wide area the shape gathers from
@@ -699,8 +711,8 @@ export function createSky(container, options = {}) {
     redraw();
   }
   function shapeUniforms(u) {
-    const am = shape && shapeTex ? [shapeAmt(simTime), shapeMelt(simTime)] : [0, 0];
-    gl.uniform2fv(u.uShapeAM, am[1] >= 1 ? [0, 0] : am);
+    const am = shape && shapeTex ? [shapeAmt(simTime), shapeMelt(simTime), shape.thick] : [0, 0, 0];
+    gl.uniform3fv(u.uShapeAM, am[1] >= 1 ? [0, 0, 0] : am);
     gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, am[0] > 0 ? shapeTex : emptyTex); gl.uniform1i(u.uMask, 5);
     if (am[0] > 0) {
       const r = shape.rect, scroll = dir() * layers[1].speed * simTime;   // subtracted in double precision
