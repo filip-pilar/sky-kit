@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>sky-kit parity check</title>
+<style>body{margin:0;font:13px ui-monospace,monospace;background:#111;color:#ddd} #box{width:800px;height:500px} pre{padding:8px}</style>
+</head>
+<body>
+<div id="box"></div>
+<pre id="out">running…</pre>
+<script type="module">
+// Renders the web sky exactly like `swift run sky-render --width 1600 --height 1000 --seconds 30`
+// (800×500 CSS px at device pixel ratio 2) and compares it pixel by pixel with the Swift PNG.
+import { createSky } from '../src/sky.js';
+const q = new URLSearchParams(location.search);
+const swiftPng = q.get('png') || '../../swift/out/swift-30s.png';
+const seconds = +(q.get('seconds') || 30);
+const out = document.getElementById('out');
+if (devicePixelRatio !== 2) out.textContent = `note: devicePixelRatio is ${devicePixelRatio}, the Swift render assumed 2`;
+
+const sky = createSky(document.getElementById('box'));
+sky.pause();                                   // only _step advances time
+await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+sky._step(seconds);
+const webUrl = sky.snapshot();
+
+const pixels = async url => {
+  const img = new Image(); img.src = url; await img.decode();
+  const c = document.createElement('canvas'); c.width = img.width; c.height = img.height;
+  const x = c.getContext('2d', { colorSpace: 'srgb' }); x.drawImage(img, 0, 0);
+  return { w: img.width, h: img.height, d: x.getImageData(0, 0, img.width, img.height).data };
+};
+const [a, b] = await Promise.all([pixels(webUrl), pixels(swiftPng)]);
+if (a.w !== b.w || a.h !== b.h) {
+  out.textContent = `size mismatch: web ${a.w}×${a.h}, swift ${b.w}×${b.h}`;
+} else {
+  let sum = 0, max = 0, over8 = 0;
+  for (let i = 0; i < a.d.length; i += 4) {
+    const d = Math.max(Math.abs(a.d[i] - b.d[i]), Math.abs(a.d[i + 1] - b.d[i + 1]), Math.abs(a.d[i + 2] - b.d[i + 2]));
+    sum += d; if (d > max) max = d; if (d > 8) over8++;
+  }
+  const n = a.d.length / 4;
+  window.result = { size: `${a.w}x${a.h}`, meanDiff: +(sum / n).toFixed(3), maxDiff: max, pctOver8: +(100 * over8 / n).toFixed(3) };
+  out.textContent = JSON.stringify(window.result, null, 2);
+}
+window.webUrl = webUrl;
+</script>
+</body>
+</html>
