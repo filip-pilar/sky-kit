@@ -116,10 +116,13 @@ static float shapeFill(float R, float body, float t, float thr, float v, float b
     float rest = ((body - 0.5) * 0.2 + 0.03) * t + (lumps * 0.5 - 0.08) * inner
                + big * (mix(0.3, 0.15, t) + 0.15 * inner) + small * mix(0.15, 0.1, t) + (bil - 0.35) * 0.2
                + clamp(v - thr, -0.3, 0.3) * mix(0.25, 0.1, t);
-    // density: low = wispy and see-through (the outline fades less than the inside), high = solid
+    // density: low = wispy and see-through (the inside fades more than the outline), high = solid. The noise is
+    // never made stronger, and the core of every thin part (a dot, a stroke) keeps a minimum density that grows
+    // with the setting, so nothing the shape is made of can vanish; wide insides (body high) may still open up
     float lo = density * 2.0, hi = density * 2.0 - 1.0;
-    float ex = edge * (density < 0.5 ? mix(0.6, 1.0, lo) : mix(1.0, 1.3, hi)) + rest * (density < 0.5 ? mix(0.35, 1.0, lo) : mix(1.0, 1.5, hi))
-             + (density - 0.5) * 0.06;
+    float ex = density < 0.5 ? edge * mix(0.6, 1.0, lo) + rest * mix(0.35, 1.0, lo) + (density - 0.5) * 0.06
+                             : edge * mix(1.0, 1.3, hi) + rest + hi * 0.06;
+    ex = max(ex, smoothstep(0.7, 0.95, R) * (1.0 - 0.85 * smoothstep(0.5, 0.85, body)) * mix(0.02, 0.18, density));
     return mix(thr - 0.3, thr + ex, smoothstep(0.0, 0.1, R));
 }
 // v: the near clouds' density here; p: position. The shape sits on a real cloud and that cloud reshapes
@@ -148,7 +151,9 @@ static float withShape(float v, float2 p, float thr, float bil, float2 so, bool 
     float R = 0.0, fill = thr - 0.3;
     shR = mix(mp.x, m.x, K);
     if (m.y > 0.0 || mp.y > 0.0) {
-      float2 wob = lite ? float2(0.0) : float2(fbm(p * 6.5 + float2(2.3, 8.9), 2), fbm(p * 6.5 + float2(7.7, 1.3), 2)) * mix(0.025, 0.035, t);
+      // (the outline wobbles by a few mask pixels, so the wobble scales with the shape and can't tear its small parts)
+      float2 wob = lite ? float2(0.0) : float2(fbm(p * 6.5 + float2(2.3, 8.9), 2), fbm(p * 6.5 + float2(7.7, 1.3), 2))
+                                        * (P.shapeRect.w / float(shape.get_height())) * mix(4.5, 6.5, t);
       float4 ms = shapeAt(p + wob, P, shape), mps = K < 1.0 ? prevAt(p + wob, P, prev) : float4(0.0);
       R = mix(mps.x, ms.x, K);
       if (R > 0.001) {

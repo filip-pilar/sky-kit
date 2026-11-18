@@ -13,11 +13,13 @@ public enum SkyShapeSource {
     case text(String)
     /// A silhouette image: transparent images use their alpha, opaque ones use dark = shape.
     case image(CGImage)
+    /// One of the built-in symbols (a heart, a star, …).
+    case symbol(SkySymbol)
 }
 
-/// Silhouette turned into the two blurred channels the cloud shader uses (port of buildShapeImage in sky.js):
-/// R = the shape (soft blur), G = a near halo, B = the shape's body (very wide blur),
-/// A = the wide area the shape gathers from and dissolves into (exactly 0 near the image's edge).
+/// Silhouette turned into the channels the cloud shader uses (port of buildShapeImage in sky.js):
+/// R = the shape (from the distance to its outline, see edgeChannel), G = a near halo, B = the shape's body
+/// (very wide blur), A = a wide area: how near a point is to the shape (exactly 0 near the image's edge).
 /// Rows are stored top-down (Metal texture order).
 struct ShapeMask {
     let width: Int
@@ -45,7 +47,9 @@ struct ShapeMask {
         // thick, solid shapes (a heart, an emoji) get soft cloud edges like the clouds around them;
         // thin strokes (text) stay crisp enough to read
         let thick = Double(min(1, max(0, ((body.max() ?? 0) / 255 - 0.6) / 0.3)))
-        let near = blur(alpha, w, h, radius: (16 + 8 * thick) * ms), wide = blur(alpha, w, h, radius: 44 * ms, scale: 2)
+        // the shape itself, from the distance to its edge
+        let near = edgeChannel(alpha, w, h, soft: (5.6 + 2.5 * thick) * Double(px) / 100, smooth: 4 * Double(px) / 100)
+        let wide = blur(alpha, w, h, radius: 44 * ms, scale: 2)
         // the wide area: a very wide blur, flattened (square root) so it reaches well out, ~1 at the shape, and faded to exactly 0 over the
         // outer part of the margin (the patch blends into the ordinary clouds there)
         let far = blur(alpha, w, h, radius: Double(sh) * 1.2, scale: 4)
@@ -91,6 +95,9 @@ struct ShapeMask {
             let p = data.bindMemory(to: UInt8.self, capacity: w * h)
             // CGContext memory is top-down already
             return ((0..<(w * h)).map { Float(p[$0]) }, w, h)
+        case .symbol(let s):
+            guard let img = s.image(height: px * 2) else { return nil }
+            return silhouette(.image(img), px: px)
         case .image(let img):
             let h = px, w = max(2, Int((Double(px) * Double(img.width) / Double(img.height)).rounded()))
             guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
@@ -126,6 +133,50 @@ struct ShapeMask {
         #endif
     }
 
+    /// Squared distance transform (Felzenszwalb & Huttenlocher), in place: f holds a squared offset on the seed
+    /// pixels and 1e20 elsewhere, and ends up holding each pixel's squared distance (via the nearest seed, plus its
+    /// offset). Port of edt in sky.js.
+    static func edt(_ f: inout [Double], _ w: Int, _ h: Int) {
+        let n = max(w, h)
+        var g = [Double](repeating: 0, count: n), out = g, v = [Int](repeating: 0, count: n), z = [Double](repeating: 0, count: n + 1)
+        func line(_ len: Int) {
+            var k = 0; v[0] = 0; z[0] = -.infinity; z[1] = .infinity
+            for q in 1..<max(1, len) {
+                var s = ((g[q] + Double(q * q)) - (g[v[k]] + Double(v[k] * v[k]))) / Double(2 * q - 2 * v[k])
+                while s <= z[k] { k -= 1; s = ((g[q] + Double(q * q)) - (g[v[k]] + Double(v[k] * v[k]))) / Double(2 * q - 2 * v[k]) }
+                k += 1; v[k] = q; z[k] = s; z[k + 1] = .infinity
+            }
+            k = 0
+            for q in 0..<len { while z[k + 1] < Double(q) { k += 1 }; out[q] = Double((q - v[k]) * (q - v[k])) + g[v[k]] }
+            for q in 0..<len { g[q] = out[q] }
+        }
+        for x in 0..<w { for y in 0..<h { g[y] = f[y * w + x] }; line(h); for y in 0..<h { f[y * w + x] = g[y] } }
+        for y in 0..<h { for x in 0..<w { g[x] = f[y * w + x] }; line(w); for x in 0..<w { f[y * w + x] = g[x] } }
+    }
+    /// The shape channel (R): 0.5 exactly on the silhouette's edge, rising to 1 within `soft` pixels inside it and
+    /// falling to 0 within `soft` pixels outside, from the distance to the edge, so every part of the shape, however
+    /// small (a dot, a thin stroke), keeps a solid core; lightly smoothed. 0…255. Port of edgeChannel in sky.js.
+    static func edgeChannel(_ alpha: [Float], _ w: Int, _ h: Int, soft: Double, smooth: Double) -> [Float] {
+        // the edge is where the (slightly smoothed, so any antialiasing looks alike) coverage crosses 1/2; the pixels
+        // next to it are the seeds, each with its sub-pixel distance to it (coverage offset / slope)
+        let n = w * h
+        let c = blur(alpha, w, h, radius: 1.7)
+        var f = [Double](repeating: 1e20, count: n), seed = [Double](repeating: 0, count: n), edge = [Bool](repeating: false, count: n)
+        for y in 0..<h { for x in 0..<w {
+            let i = y * w + x, v = Double(c[i]) / 255
+            if abs(v - 0.5) > 0.35 { continue }
+            let gx = Double(c[x < w - 1 ? i + 1 : i] - c[x > 0 ? i - 1 : i]) / 510, gy = Double(c[y < h - 1 ? i + w : i] - c[y > 0 ? i - w : i]) / 510
+            let d = (v - 0.5) / max(0.05, (gx * gx + gy * gy).squareRoot())
+            if abs(d) <= 2 { edge[i] = true; f[i] = d * d; seed[i] = d }
+        } }
+        edt(&f, w, h)
+        var r = [Float](repeating: 0, count: n)
+        for i in 0..<n {
+            let sd = edge[i] ? seed[i] : (c[i] >= 127.5 ? 1 : -1) * f[i].squareRoot()   // signed distance, + inside
+            r[i] = Float(255 * min(1, max(0, 0.5 + sd / (2 * soft))))
+        }
+        return blur(r, w, h, radius: smooth)
+    }
     /// The blur at 1/k resolution (box-averaged down, bilinear back up). Port of blurAt in sky.js.
     private static func blur(_ src: [Float], _ w: Int, _ h: Int, radius: Double, scale k: Int) -> [Float] {
         let sw = (w + k - 1) / k, sh = (h + k - 1) / k

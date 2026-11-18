@@ -23,6 +23,10 @@ public final class SkyController: ObservableObject {
         wake?()
     }
     public func clearShape() { renderer?.clearShape() }
+    /// Melt the shape on screen back into its cloud now (from wherever it is) and drop the queued ones.
+    public func releaseShape() { renderer?.releaseShape(); wake?() }
+    /// What the shapes are doing right now (phase, what's on screen, what's next).
+    public var shapeState: SkyShapeState { renderer?.shapeState ?? .idle }
     /// The clouds at the current moment as an image, rendered offscreen at any size (planes and shapes not included).
     public func snapshot(width: Int, height: Int, pixelsPerPoint: Double = 2) -> CGImage? {
         guard let r = renderer, let copy = try? SkyRenderer(device: r.device, options: r.options) else { return nil }

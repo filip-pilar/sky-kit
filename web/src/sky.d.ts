@@ -39,12 +39,15 @@ export interface ShapeOptions {
   text?: string;
   /** Silhouette image: transparent PNG/SVG (alpha is used) or opaque image (dark = shape). URL or element. */
   image?: string | HTMLImageElement | HTMLCanvasElement | ImageBitmap;
+  /** One of the built-in symbols (see SKY_SYMBOLS). */
+  symbol?: SkySymbolName;
   /** Centre, 0..1 of the view (y = 0 is the bottom). Default 0.5, 0.6. */
   x?: number;
   y?: number;
   /** Height of the shape as a fraction of the view height. Default 0.32. */
   size?: number;
-  /** Seconds for a nearby cloud to turn into the shape, to hold it, and to turn back. Default 5, 5, 7. */
+  /** Seconds for a nearby cloud to turn into the shape, to hold it, and to turn back. Default 5, 5, 7.
+   * hold: Infinity holds it until releaseShape(). */
   form?: number;
   hold?: number;
   fade?: number;
@@ -72,12 +75,28 @@ export interface Sky {
   flyPlane(options?: PlaneOptions): void;
   /** Nearby clouds drift in and gather into the shape, then it melts back. Needs speed > 0. */
   showShape(options: ShapeOptions): Promise<void>;
+  /** Remove the shape at once (it vanishes); see releaseShape for the smooth way. */
   clearShape(): void;
+  /** Melt the shape on screen back into its cloud now, from wherever it is, and drop the queued ones. */
+  releaseShape(): void;
+  /** What the shapes are doing: the phase, the text or symbol on screen, and the ones queued after it. */
+  readonly shapeState: ShapeState;
   /** PNG data URL of the current frame, or null before the first frame. */
   snapshot(): string | null;
   destroy(): void;
 }
 
+export interface ShapeState {
+  phase: 'none' | 'waiting' | 'forming' | 'holding' | 'melting';
+  label: string | null;
+  next: string[];
+}
+export type SkySymbolName = 'heart' | 'star' | 'sun' | 'moon' | 'smile' | 'music' | 'bolt' | 'infinity';
+type SymbolPart = ['fill' | 'line', 'path', string] | ['fill' | 'line', 'circle', number, number, number] | ['fill' | 'line', 'ellipse', number, number, number, number, number];
+/** The built-in symbols: a box (x, y, width, height) and parts drawn in it. */
+export declare const SKY_SYMBOLS: Record<SkySymbolName, { box: [number, number, number, number]; parts: SymbolPart[] }>;
+/** A built-in symbol as SVG markup (default colour: currentColor, for buttons). */
+export declare function skySymbolSvg(name: SkySymbolName, color?: string): string;
 export declare const SKY_DEFAULTS: Required<SkyOptions>;
 /** Drops keys whose value is undefined. */
 export declare function cleanOptions(options?: SkyOptions): SkyOptions;

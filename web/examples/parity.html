@@ -22,12 +22,14 @@ const sky = createSky(document.getElementById('box'));
 sky.pause();                                   // only _step advances time
 // two frames (or a timer, if the page is in the background and frames are held back)
 await new Promise(r => { requestAnimationFrame(() => requestAnimationFrame(r)); setTimeout(r, 500); });
-// same extras as `sky-render --text … --heart --plane`
+// same extras as `sky-render --text … --heart --symbol … --release-at … --plane`
 const HEART = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="100" height="92" viewBox="0 0 100 92"><path d="M50 90C20 66 2 48 2 28 2 13 14 2 28 2c10 0 18 6 22 14C54 8 62 2 72 2c14 0 26 11 26 26 0 20-18 38-48 62z" fill="#000"/></svg>');
 if (q.get('text')) await sky.showShape({ text: q.get('text') });
 if (q.get('heart')) await sky.showShape({ image: HEART, size: 0.36 });
+if (q.get('symbol')) await sky.showShape({ symbol: q.get('symbol'), density: +(q.get('density') ?? 0.5) });   // like sky-render --symbol name --density d
+if (q.get('release')) { const at = +q.get('release'); sky._step(at); sky.releaseShape(); sky._step(seconds - at); }   // like --release-at
 if (q.get('plane')) sky.flyPlane({ from: [0, 0.7], to: [1, 0.75] });
-sky._step(seconds);
+if (!q.get('release')) sky._step(seconds);
 const webUrl = sky.snapshot();
 
 const pixels = async url => {

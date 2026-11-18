@@ -154,10 +154,13 @@ float shapeFill(float R, float body, float t, float thr, float v, float bil, flo
   float rest = ((body - 0.5) * 0.2 + 0.03) * t + (lumps * 0.5 - 0.08) * inner
              + big * (mix(0.3, 0.15, t) + 0.15 * inner) + small * mix(0.15, 0.1, t) + (bil - 0.35) * 0.2
              + clamp(v - thr, -0.3, 0.3) * mix(0.25, 0.1, t);
-  // density: low = wispy and see-through (the outline fades less than the inside), high = solid
+  // density: low = wispy and see-through (the inside fades more than the outline), high = solid. The noise is
+  // never made stronger, and the core of every thin part (a dot, a stroke) keeps a minimum density that grows
+  // with the setting, so nothing the shape is made of can vanish; wide insides (body high) may still open up
   float d = uShapeDensity, lo = d * 2.0, hi = d * 2.0 - 1.0;
-  float ex = edge * (d < 0.5 ? mix(0.6, 1.0, lo) : mix(1.0, 1.3, hi)) + rest * (d < 0.5 ? mix(0.35, 1.0, lo) : mix(1.0, 1.5, hi))
-           + (d - 0.5) * 0.06;
+  float ex = d < 0.5 ? edge * mix(0.6, 1.0, lo) + rest * mix(0.35, 1.0, lo) + (d - 0.5) * 0.06
+                     : edge * mix(1.0, 1.3, hi) + rest + hi * 0.06;
+  ex = max(ex, smoothstep(0.7, 0.95, R) * (1.0 - 0.85 * smoothstep(0.5, 0.85, body)) * mix(0.02, 0.18, d));
   return mix(thr - 0.3, thr + ex, smoothstep(0.0, 0.1, R));
 }
 // v: the near clouds' density here; p: position. The shape sits on a real cloud and that cloud reshapes
@@ -185,7 +188,9 @@ float withShape(float v, vec2 p, float thr, float bil, vec2 so, bool lite, out f
   float R = 0.0, fill = thr - 0.3;
   shR = mix(mp.x, m.x, K);
   if (m.y > 0.0 || mp.y > 0.0){
-    vec2 wob = lite ? vec2(0.0) : vec2(fbm(p * 6.5 + vec2(2.3, 8.9), 2), fbm(p * 6.5 + vec2(7.7, 1.3), 2)) * mix(0.025, 0.035, t);
+    // (the outline wobbles by a few mask pixels, so the wobble scales with the shape and can't tear its small parts)
+    vec2 wob = lite ? vec2(0.0) : vec2(fbm(p * 6.5 + vec2(2.3, 8.9), 2), fbm(p * 6.5 + vec2(7.7, 1.3), 2))
+                                  * (uShapeRect.w / float(textureSize(uShape, 0).y)) * mix(4.5, 6.5, t);
     vec4 ms = shapeAt(p + wob), mps = K < 1.0 ? prevAt(p + wob) : vec4(0.0);
     R = mix(mps.x, ms.x, K);
     if (R > 0.001){
@@ -368,6 +373,54 @@ function silhouette(src, px) {
   }
   return c;
 }
+/**
+ * Squared distance transform (Felzenszwalb & Huttenlocher), in place: f holds a squared offset on the seed
+ * pixels and 1e20 elsewhere, and ends up holding each pixel's squared distance (via the nearest seed, plus its
+ * offset). Port: ShapeMask.edt in Swift.
+ */
+function edt(f, w, h) {
+  const n = Math.max(w, h), g = new Float64Array(n), v = new Int32Array(n), z = new Float64Array(n + 1);
+  const line = len => {   // g → g, one line
+    let k = 0; v[0] = 0; z[0] = -Infinity; z[1] = Infinity;
+    for (let q = 1; q < len; q++) {
+      let s = ((g[q] + q * q) - (g[v[k]] + v[k] * v[k])) / (2 * q - 2 * v[k]);
+      while (s <= z[k]) { k--; s = ((g[q] + q * q) - (g[v[k]] + v[k] * v[k])) / (2 * q - 2 * v[k]); }
+      k++; v[k] = q; z[k] = s; z[k + 1] = Infinity;
+    }
+    const out = new Float64Array(len);
+    k = 0;
+    for (let q = 0; q < len; q++) { while (z[k + 1] < q) k++; out[q] = (q - v[k]) * (q - v[k]) + g[v[k]]; }
+    g.set(out);
+  };
+  for (let x = 0; x < w; x++) { for (let y = 0; y < h; y++) g[y] = f[y * w + x]; line(h); for (let y = 0; y < h; y++) f[y * w + x] = g[y]; }
+  for (let y = 0; y < h; y++) { for (let x = 0; x < w; x++) g[x] = f[y * w + x]; line(w); for (let x = 0; x < w; x++) f[y * w + x] = g[x]; }
+}
+/**
+ * The shape channel (R): 0.5 exactly on the silhouette's edge, rising to 1 within `soft` pixels inside it and
+ * falling to 0 within `soft` pixels outside, from the distance to the edge, so every part of the shape, however
+ * small (a dot, a thin stroke), keeps a solid core; lightly smoothed (blur radius `smooth`). 0..255.
+ * Port: ShapeMask.edgeChannel.
+ */
+function edgeChannel(alpha, w, h, soft, smooth) {
+  // the edge is where the (slightly smoothed, so any antialiasing looks alike) coverage crosses 1/2; the pixels
+  // next to it are the seeds, each with its sub-pixel distance to it (coverage offset / slope)
+  const n = w * h, c = blurAlpha(alpha, w, h, 1.7), f = new Float64Array(n), seed = new Float64Array(n), edge = new Uint8Array(n);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const i = y * w + x, v = c[i] / 255;
+    f[i] = 1e20;
+    if (Math.abs(v - 0.5) > 0.35) continue;
+    const gx = (c[x < w - 1 ? i + 1 : i] - c[x > 0 ? i - 1 : i]) / 510, gy = (c[y < h - 1 ? i + w : i] - c[y > 0 ? i - w : i]) / 510;
+    const d = (v - 0.5) / Math.max(0.05, Math.hypot(gx, gy));
+    if (Math.abs(d) <= 2) { edge[i] = 1; f[i] = d * d; seed[i] = d; }
+  }
+  edt(f, w, h);
+  const r = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const sd = edge[i] ? seed[i] : (c[i] >= 127.5 ? 1 : -1) * Math.sqrt(f[i]);   // signed distance, + inside
+    r[i] = 255 * Math.min(1, Math.max(0, 0.5 + sd / (2 * soft)));
+  }
+  return blurAlpha(r, w, h, smooth);
+}
 /** Smooth blur of an alpha channel: three box-blur passes each way (close to a Gaussian). */
 function blurAlpha(alpha, w, h, radius) {
   let a = Float32Array.from(alpha), b = new Float32Array(w * h);
@@ -510,6 +563,33 @@ function findCloud(grid, gw, gh, ox, oy, step, wx, wy, need, allowed, box, same 
   }
   return best ? { ...best, label } : null;
 }
+/**
+ * Built-in symbols for showShape({ symbol }) (port: SkySymbol.swift; keep the two identical). Each is a box
+ * (x, y, width, height in its own units, about 100 tall) and parts: [kind, 'path', d] (absolute M L H V C Q Z only),
+ * [kind, 'circle', cx, cy, r] or [kind, 'ellipse', cx, cy, rx, ry, degrees], kind 'fill' or 'line' (14 wide, round).
+ * The heart is filled and becomes a solid cloud; the others are bold strokes that form like letters.
+ */
+export const SKY_SYMBOLS = {
+  heart: { box: [0, 0, 100, 96], parts: [['fill', 'path', 'M50 94C30 78 3 60 3 34 3 16 16 4 31 4 42 4 49 14 50 30 51 14 58 4 69 4 84 4 97 16 97 34 97 60 70 78 50 94Z']] },
+  star: { box: [-4, -2, 108, 104], parts: [['line', 'path', 'M50 7L62.3 36L94 38.2L70 59.5L78.2 90L50 73L21.8 90L30 59.5L6 38.2L37.7 36Z']] },
+  sun: { box: [-4, -4, 108, 108], parts: [['line', 'circle', 50, 50, 18], ['line', 'path', 'M50 6V16M50 84V94M6 50H16M84 50H94M18.9 18.9L26 26M74 74L81.1 81.1M18.9 81.1L26 74M74 26L81.1 18.9']] },
+  moon: { box: [-4, -4, 108, 108], parts: [['line', 'path', 'M46.1 8C25.5 8 7.9 22.8 4.6 43.1C1.2 63.4 13.1 83.2 32.6 89.8C52.1 96.4 73.5 87.9 83.1 69.7C66.2 78.8 45 73 35.1 56.5C25.2 40 30.1 18.6 46.1 8Z']] },
+  smile: { box: [-4, -4, 108, 108], parts: [['line', 'circle', 50, 50, 42], ['fill', 'circle', 35, 40, 8], ['fill', 'circle', 65, 40, 8], ['line', 'path', 'M30 60Q50 80 70 60']] },
+  music: { box: [-4, -4, 108, 108], parts: [['fill', 'ellipse', 24, 78, 16, 12, -20], ['fill', 'ellipse', 74, 70, 16, 12, -20], ['line', 'path', 'M36 76V22L86 10V68']] },
+  bolt: { box: [-4, -4, 108, 108], parts: [['line', 'path', 'M58 6L20 56H48L40 94L80 42H52L58 6Z']] },
+  infinity: { box: [-4, -4, 108, 108], parts: [['line', 'path', 'M50 50C40 36 32 30 22 30C11 30 2 39 2 50C2 61 11 70 22 70C32 70 40 64 50 50C60 36 68 30 78 30C89 30 98 39 98 50C98 61 89 70 78 70C68 70 60 64 50 50Z']] },
+};
+/** A built-in symbol as SVG markup (for buttons: the default colour follows the text colour). */
+export function skySymbolSvg(name, color = 'currentColor') {
+  const s = SKY_SYMBOLS[name];
+  if (!s) return '';
+  const paint = k => k === 'fill' ? `fill="${color}"` : `fill="none" stroke="${color}" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"`;
+  const parts = s.parts.map(([k, type, ...a]) =>
+    type === 'path' ? `<path ${paint(k)} d="${a[0]}"/>`
+    : type === 'circle' ? `<circle ${paint(k)} cx="${a[0]}" cy="${a[1]}" r="${a[2]}"/>`
+    : `<ellipse ${paint(k)} cx="${a[0]}" cy="${a[1]}" rx="${a[2]}" ry="${a[3]}" transform="rotate(${a[4]} ${a[0]} ${a[1]})"/>`).join('');
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${s.box.join(' ')}">${parts}</svg>`;
+}
 /** Drop keys whose value is undefined, so `{ speed: undefined }` means "default", not "broken". */
 export function cleanOptions(o = {}) {
   return Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined));
@@ -601,8 +681,17 @@ export function createSky(container, options = {}) {
   }
   const ease = x => { x = Math.min(1, Math.max(0, x)); return 0.5 * x + 0.5 * smooth01(x); };   // gentle ends, no dead start
   // forming progress (stays 1 while holding and melting) and melting progress
-  function shapeAmt(t) { return shape && t > shape.t0 ? ease((t - shape.t0) / shape.form) : 0; }
-  function shapeMelt(t) { return shape ? ease((t - shape.t0 - shape.form - shape.hold) / shape.fade) : 0; }
+  // (a released shape keeps the forming it had reached and melts from there, over relDur)
+  function shapeAmt(t) {
+    if (!shape || t <= shape.t0) return 0;
+    return shape.relAt != null && t >= shape.relAt ? shape.relAmt : ease((t - shape.t0) / shape.form);
+  }
+  function shapeMelt(t) {
+    if (!shape) return 0;
+    if (shape.relAt != null && t >= shape.relAt) return ease((t - shape.relAt) / shape.relDur);
+    return ease((t - shape.t0 - shape.form - shape.hold) / shape.fade);
+  }
+  const shapeEnd = s => s.relAt != null ? s.relAt + s.relDur : s.t0 + s.form + s.hold + s.fade;
   // paint clouds into a framebuffer: a layer snapshot, or (amt > 0) the live patch over a shape
   function drawClouds(L, fb, w, h, x0, y0, time, amt, scissor, melt = 0, upp = viewH / cacheH) {
     const u = cloudProg.u;
@@ -756,7 +845,11 @@ export function createSky(container, options = {}) {
     let bodyMax = 0; for (let i = 0; i < w * h; i++) bodyMax = Math.max(bodyMax, body[i]);
     const thick = Math.min(1, Math.max(0, (bodyMax / 255 - 0.6) / 0.3));
     await breathe();
-    const near = blurIn(alpha, w, h, (16 + 8 * thick) * MS, 1, bx0, by0, bx1, by1);
+    // the shape itself, from the distance to its edge (only the box can be near it)
+    const bw = bx1 - bx0, bh = by1 - by0, sub = new Float32Array(bw * bh);
+    for (let y = 0; y < bh; y++) sub.set(alpha.subarray((y + by0) * w + bx0, (y + by0) * w + bx1), y * bw);
+    const edge = edgeChannel(sub, bw, bh, (5.6 + 2.5 * thick) * MASK_PX / 100, 4 * MASK_PX / 100), near = new Float32Array(w * h);
+    for (let y = 0; y < bh; y++) near.set(edge.subarray(y * bw, (y + 1) * bw), (y + by0) * w + bx0);
     await breathe();
     const wide = blurIn(alpha, w, h, 44 * MS, 2, bx0, by0, bx1, by1);
     // the wide area: a very wide blur, flattened (square root) so it reaches well out, ~1 at the shape, and faded to exactly 0 over the
@@ -795,11 +888,12 @@ export function createSky(container, options = {}) {
     const hUnits = silH * (img.height / img.silH);
     const wUnits = hUnits * img.width / img.height;
     // the shape drifts with the clouds: place it so it is at (x, y) halfway through its hold
-    const tMid = t0 + form + hold / 2, scroll = dir() * N.speed * tMid;
+    const holdP = Math.min(hold, 10);   // (hold: Infinity holds until releaseShape; place it as if it held 10 s)
+    const tMid = t0 + form + holdP / 2, scroll = dir() * N.speed * tMid;
     let cx = (o.x ?? 0.5) * vw + scroll, cy = (o.y ?? 0.6) * viewH;
     // put it on a real cloud near there: that cloud turns into the shape, and back into itself
     const k = hUnits / img.height, hw = img.silW * k / 2, hh = silH / 2;
-    const tEnd = t0 + form + hold + fade, s0 = dir() * N.speed * t0, s1 = dir() * N.speed * tEnd;
+    const tEnd = t0 + form + holdP + fade, s0 = dir() * N.speed * t0, s1 = dir() * N.speed * tEnd;
     const fits = 2 * hw + 0.06 < vw;
     const allowed = [fits ? scroll + hw + 0.03 : scroll + vw / 2, hh + 0.03, fits ? scroll + vw - hw - 0.03 : scroll + vw / 2, viewH - hh - 0.03];
     const found = from ? null : cloudNear(o._near ? o._near[0] : cx, o._near ? o._near[1] : cy, img.area * k * k, [t0, tMid, tEnd],
@@ -823,7 +917,7 @@ export function createSky(container, options = {}) {
       blend = Math.min(blend, from.fade_);
     }
     freeShape();
-    shape = { image: img, rect, area, t0, tMid, form, hold, fade, patch: null, patchReady: false,
+    shape = { image: img, rect, area, t0, tMid, form, hold, fade, patch: null, patchReady: false, label: o.text ?? o.symbol ?? 'image', relAt: null,
               thick: img.thick, fade_: blend,   // blend border: inside the masks' all-zero margins
               density: Math.min(1, Math.max(0, o.density ?? 0.5)), src, cloudAt, prev };
     uploadShape(img);
@@ -928,15 +1022,18 @@ export function createSky(container, options = {}) {
   // render the shape's live patch for this frame, and drop the shape once it has melted
   function tendShape(paint = true) {
     if (!shape) return;
-    const holdEnd = shape.t0 + shape.form + shape.hold, meltEnd = holdEnd + shape.fade;
+    const holdEnd = shape.t0 + shape.form + shape.hold, meltEnd = shapeEnd(shape);
     const next = shapeQueue[0];
-    if (simTime > holdEnd && shapeMelt(simTime) < 0.05 && next?.img && next.o.pause === 0 && !leadBuilding) {
+    // a shape that has drifted off screen with the clouds is done (nobody sees its cloud come back)
+    const r = shape.area, scroll = dir() * layers[1].speed * simTime, vw = canvas.width / unit;
+    const gone = simTime > shape.t0 && (dir() > 0 ? r[0] + r[2] < scroll - 0.05 : r[0] > scroll + vw + 0.05);
+    if (shape.relAt == null && simTime > holdEnd && shapeMelt(simTime) < 0.05 && next?.img && next.o.pause === 0 && !leadBuilding) {
       // pause 0: the next shape takes over right away and this one's outline turns straight into it
       shapeQueue.shift();
       placeShape(next.img, { ...next.o, _from: shape });
-    } else if (simTime > meltEnd) {
+    } else if (simTime > meltEnd || gone) {
       // melted: the next waiting shape (showShape with queue) forms on the same cloud after its pause
-      lastCloud = shape.cloudAt; lastEnd = meltEnd;
+      lastCloud = shape.cloudAt; lastEnd = Math.min(meltEnd, simTime);
       freeShape();
       placeNext();
       if (!shape) return;
@@ -1032,6 +1129,7 @@ export function createSky(container, options = {}) {
      */
     async showShape(o) {
       let src = o.text;
+      if (o.symbol) src = SKY_SYMBOLS[o.symbol] ? await loadImage('data:image/svg+xml,' + encodeURIComponent(skySymbolSvg(o.symbol, '#000'))) : null;
       if (o.image) src = typeof o.image === 'string' ? await loadImage(o.image) : o.image;
       if (!src || !layers[0]?.snaps) return;
       const queued = !!o.queue && (!!shape || shapeQueue.length > 0 || leadBuilding > 0);
@@ -1045,6 +1143,29 @@ export function createSky(container, options = {}) {
       if (slot) { slot.img = img; placeNext(); } else { takeOver(img, o); placeNext(); }
     },
     clearShape() { shapeTicket++; shapeQueue = []; freeShape(); },
+    /**
+     * Melt the shape on screen back into its cloud now, from wherever it is (forming, holding, turning into the
+     * next one), and drop the shapes waiting after it. Unlike clearShape, nothing jumps.
+     */
+    releaseShape() {
+      shapeTicket++; shapeQueue = [];
+      if (!shape) return;
+      const amt = shapeAmt(simTime), melt = shapeMelt(simTime);
+      if (amt <= 0) { freeShape(); return; }                     // hadn't started yet: nothing to see
+      if (melt > 0 || shape.relAt != null) return;               // already melting
+      shape.relAt = simTime; shape.relAmt = amt;
+      shape.relDur = shape.fade * (shape.prev ? 1 : Math.max(0.3, amt));   // a barely formed shape goes quicker
+    },
+    /**
+     * What the shapes are doing: phase 'none' | 'waiting' (queued, or its pause) | 'forming' | 'holding' |
+     * 'melting', label (the text or symbol on screen) and next (the labels queued after it).
+     */
+    get shapeState() {
+      const next = shapeQueue.map(s => s.o.text ?? s.o.symbol ?? 'image');
+      if (!shape) return { phase: next.length || leadBuilding ? 'waiting' : 'none', label: null, next };
+      const amt = shapeAmt(simTime), melt = shapeMelt(simTime);
+      return { phase: amt <= 0 ? 'waiting' : melt > 0 ? 'melting' : amt < 1 ? 'forming' : 'holding', label: shape.label, next };
+    },
     /** Testing aid: fast-forward sky time as if `seconds` passed at 30 fps, then draw. */
     _step(seconds) {
       if (!layers[0]?.snaps) return;

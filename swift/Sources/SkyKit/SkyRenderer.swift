@@ -58,11 +58,13 @@ public final class SkyRenderer {
             self.texture = texture; self.rect = rect; self.t0 = t0; self.form = form; self.hold = hold; self.fade = fade
             self.thickness = thickness; self.blend = blend
         }
+        var label: String?                                  // the text or symbol (for shapeState)
+        var relAt: Double?, relAmt = 0.0, relDur = 1.0      // released (releaseShape): melts from relAmt over relDur from relAt
         var holdEnd: Double { t0 + form + hold }
-        var end: Double { t0 + form + hold + fade }
+        var end: Double { relAt.map { $0 + relDur } ?? t0 + form + hold + fade }
     }
     private struct PendingShape {
-        let mask: ShapeMask; let x, y, size, form, hold, fade, density: Double; var pause: Double
+        let mask: ShapeMask; let x, y, size, form, hold, fade, density: Double; var pause: Double; var label: String?
         var near: SIMD2<Double>? = nil    // form on the cloud there (the previous shape's)
         var startAt: Double? = nil        // start forming then (the previous shape's end + pause)
         var from: Shape? = nil            // turn straight from this shape (pause 0)
@@ -171,14 +173,16 @@ public final class SkyRenderer {
     private static func ease(_ x: Double) -> Double {   // gentle ends, but no long dead start
         let v = min(max(x, 0), 1); return 0.5 * v + 0.5 * v * v * (3 - 2 * v)
     }
-    /// Forming progress (stays 1 while holding and melting).
+    /// Forming progress (stays 1 while holding and melting; a released shape keeps what it had reached).
     private func shapeAmount(at t: Double) -> Double {
         guard let s = shape, t > s.t0 else { return 0 }
+        if let r = s.relAt, t >= r { return s.relAmt }
         return Self.ease((t - s.t0) / s.form)
     }
-    /// Melting progress.
+    /// Melting progress (a released shape melts from when it was released, over relDur).
     private func shapeMelt(at t: Double) -> Double {
         guard let s = shape else { return 0 }
+        if let r = s.relAt, t >= r { return Self.ease((t - r) / s.relDur) }
         return Self.ease((t - s.t0 - s.form - s.hold) / s.fade)
     }
     private func cloudParams(_ def: LayerDef, x0: Double, y0: Double, time: Double, targetHeight: Int, amount: Double, melt: Double = 0, upp: Double? = nil) -> CloudParams {
@@ -284,13 +288,16 @@ public final class SkyRenderer {
         updatePlanes(sdt)
         for i in layers.indices { advance(i, cb) }
         if let sh = shape {
-            if simTime > sh.holdEnd && shapeMelt(at: simTime) < 0.05, var n = shapeQueue.first, n.pause == 0 {
+            // a shape that has drifted off screen with the clouds is done (nobody sees its cloud come back)
+            let r = sh.area, scroll = dir * layers[1].def.speed * simTime, vw = Double(width) / unit
+            let gone = simTime > sh.t0 && (dir > 0 ? r.x + r.z < scroll - 0.05 : r.x > scroll + vw + 0.05)
+            if sh.relAt == nil && simTime > sh.holdEnd && shapeMelt(at: simTime) < 0.05, var n = shapeQueue.first, n.pause == 0 {
                 // pause 0: the next shape takes over right away and this one's outline turns straight into it
                 shapeQueue.removeFirst(); n.from = sh; placeShape(n)
-            } else if simTime > sh.end {
+            } else if simTime > sh.end || gone {
                 // melted back into its cloud: the next queued shape forms on the same cloud after its pause
                 shape = nil
-                if !shapeQueue.isEmpty { var n = shapeQueue.removeFirst(); n.near = sh.cloudAt; n.startAt = sh.end + max(0, n.pause); placeShape(n) }
+                if !shapeQueue.isEmpty { var n = shapeQueue.removeFirst(); n.near = sh.cloudAt; n.startAt = min(sh.end, simTime) + max(0, n.pause); placeShape(n) }
             }
         }
     }
@@ -397,7 +404,9 @@ public final class SkyRenderer {
     public func showShape(_ source: SkyShapeSource, x: Double = 0.5, y: Double = 0.6, size: Double = 0.32,
                           form: Double = 5, hold: Double = 5, fade: Double = 7, density: Double = 0.5, queue: Bool = false, pause: Double = 1) -> Bool {
         guard let mask = ShapeMask.make(source) else { return false }
-        let p = PendingShape(mask: mask, x: x, y: y, size: size, form: form, hold: hold, fade: fade, density: min(1, max(0, density)), pause: max(0, pause))
+        var label: String? = nil
+        switch source { case .text(let t): label = t; case .symbol(let s): label = s.rawValue; case .image: label = "image" }
+        let p = PendingShape(mask: mask, x: x, y: y, size: size, form: form, hold: hold, fade: fade, density: min(1, max(0, density)), pause: max(0, pause), label: label)
         if queue && (shape != nil || pendingShape != nil || !shapeQueue.isEmpty) { shapeQueue.append(p); return true }
         shapeQueue.removeAll()
         if layers.count == 2 { takeOver(p) } else { pendingShape = p }
@@ -417,6 +426,25 @@ public final class SkyRenderer {
         placeShape(p)
     }
     public func clearShape() { shape = nil; pendingShape = nil; shapeQueue.removeAll() }
+    /// Melt the shape on screen back into its cloud now, from wherever it is (forming, holding, turning into the
+    /// next one), and drop the shapes waiting after it. Unlike clearShape, nothing jumps.
+    public func releaseShape() {
+        shapeQueue.removeAll(); pendingShape = nil
+        guard let sh = shape else { return }
+        let amt = shapeAmount(at: simTime), melt = shapeMelt(at: simTime)
+        if amt <= 0 { shape = nil; return }                       // hadn't started yet: nothing to see
+        if melt > 0 || sh.relAt != nil { return }                 // already melting
+        sh.relAt = simTime; sh.relAmt = amt
+        sh.relDur = sh.fade * (sh.prev != nil ? 1 : max(0.3, amt))   // a barely formed shape goes quicker
+    }
+    /// What the shapes are doing: the phase, the text or symbol on screen, and the ones queued after it.
+    public var shapeState: SkyShapeState {
+        let next = shapeQueue.map { $0.label ?? "image" }
+        guard let sh = shape else { return SkyShapeState(phase: next.isEmpty && pendingShape == nil ? .none : .waiting, label: nil, next: next) }
+        let amt = shapeAmount(at: simTime), melt = shapeMelt(at: simTime)
+        let phase: SkyShapeState.Phase = amt <= 0 ? .waiting : melt > 0 ? .melting : amt < 1 ? .forming : .holding
+        return SkyShapeState(phase: phase, label: sh.label, next: next)
+    }
 
     private func placeShape(_ p: PendingShape) {
         let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: p.mask.width, height: p.mask.height, mipmapped: false)
@@ -431,11 +459,12 @@ public final class SkyRenderer {
         let hUnits = silH * Double(p.mask.height) / Double(p.mask.silhouetteHeight)
         let wUnits = hUnits * Double(p.mask.width) / Double(p.mask.height)
         // the shape drifts with the clouds: place it so it is at (x, y) halfway through its hold
-        let tMid = t0 + p.form + p.hold / 2, scroll = dir * near.def.speed * tMid
+        let holdP = min(p.hold, 10)   // (hold .infinity holds until releaseShape; place it as if it held 10 s)
+        let tMid = t0 + p.form + holdP / 2, scroll = dir * near.def.speed * tMid
         var cx = p.x * vw + scroll, cy = p.y * viewH
         // put it on a real cloud near there: that cloud turns into the shape, and back into itself
         let k = hUnits / Double(p.mask.height), hw = Double(p.mask.silhouetteWidth) * k / 2, hh = silH / 2
-        let tEnd = t0 + p.form + p.hold + p.fade, s0 = dir * near.def.speed * t0, s1 = dir * near.def.speed * tEnd
+        let tEnd = t0 + p.form + holdP + p.fade, s0 = dir * near.def.speed * t0, s1 = dir * near.def.speed * tEnd
         let fits = 2 * hw + 0.06 < vw
         let allowed = SIMD4(fits ? scroll + hw + 0.03 : scroll + vw / 2, hh + 0.03, fits ? scroll + vw - hw - 0.03 : scroll + vw / 2, viewH - hh - 0.03)
         let found = from != nil ? nil : cloudNear(x: p.near?.x ?? cx, y: p.near?.y ?? cy, need: p.mask.silhouetteArea * k * k, times: [t0, tMid, tEnd],
@@ -451,6 +480,7 @@ public final class SkyRenderer {
         if let from { blend = min(blend, from.blend) }
         let sh = Shape(texture: tex, rect: rect, t0: t0, form: p.form, hold: p.hold, fade: p.fade, thickness: p.mask.thickness, blend: blend)
         sh.density = p.density
+        sh.label = p.label
         sh.area = rect
         if let from {
             // the previous shape's cloud and mask carry over: its outline turns into this one's
@@ -615,8 +645,9 @@ public final class SkyRenderer {
 
     /// Render a still image offscreen: simulates `seconds` of sky time at 30 fps, then draws.
     /// `prepare` runs once the sky is set up (e.g. to start a shape or a plane). Useful for wallpapers, thumbnails, tests.
+    /// `onFrame` runs after every simulated frame with the seconds simulated so far (e.g. to release a shape at some point).
     public func renderImage(width: Int, height: Int, pixelsPerPoint: Double = 2, seconds: Double = 0,
-                            prepare: ((SkyRenderer) -> Void)? = nil) throws -> CGImage {
+                            prepare: ((SkyRenderer) -> Void)? = nil, onFrame: ((SkyRenderer, Double) -> Void)? = nil) throws -> CGImage {
         resize(width: width, height: height, pixelsPerPoint: pixelsPerPoint)
         let frames = Int((seconds * 30).rounded())
         let saved = reduceMotion; reduceMotion = false
@@ -626,6 +657,7 @@ public final class SkyRenderer {
             update(dt: i == 0 ? 0 : 1.0 / 30.0, commandBuffer: cb)
             cb.commit()
             if i == 0, let prepare { prepare(self) }
+            onFrame?(self, Double(i) / 30)
         }
         let desc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: width, height: height, mipmapped: false)
         desc.usage = [.renderTarget]; desc.storageMode = .private
