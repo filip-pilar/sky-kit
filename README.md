@@ -62,9 +62,9 @@ Props are the options below; changing a prop updates the sky live, and removing 
 | `trailLife` | `40` | seconds a contrail lingers |
 | `respectReducedMotion` | `true` | hold still when the user prefers reduced motion |
 
-Methods: `set(options)`, `pause()`, `play()`, `flyPlane({ from, to }?)`, `showShape({ text | image, x, y, size, form, hold, fade, density, queue })`, `clearShape()`, `snapshot()` (PNG data URL), `destroy()`.
+Methods: `set(options)`, `pause()`, `play()`, `flyPlane({ from, to }?)`, `showShape({ text | image, x, y, size, form, hold, fade, density, queue, pause })`, `clearShape()`, `snapshot()` (PNG data URL), `destroy()`.
 
-`showShape` accepts text/emoji or an image (URL, `<img>`, canvas): transparent images use their alpha, opaque ones use dark = shape. It is put on a real cloud near `x, y`, which reshapes into it over `form` seconds (default 5); it holds (5); then it reshapes back into that cloud (7), which stays. `density` (0–1, default 0.5 = like the clouds around) makes the finished shape wispier or more solid. `queue: true` waits for the current shape to melt and then forms on the same cloud (when it is still there), so `showShape({ text: 'one' })` followed by `showShape({ text: 'two', queue: true })` gives word, cloud, next word, cloud.
+`showShape` accepts text/emoji or an image (URL, `<img>`, canvas): transparent images use their alpha, opaque ones use dark = shape. It is put on a real cloud near `x, y`, which reshapes into it over `form` seconds (default 5); it holds (5); then it reshapes back into that cloud (7), which stays. `density` (0–1, default 0.5 = like the clouds around) makes the finished shape wispier or more solid. `queue: true` waits for the current shape to melt and then forms on the same cloud (when it is still there), so `showShape({ text: 'one' })` followed by `showShape({ text: 'two', queue: true })` gives word, cloud, next word, cloud. `pause` (seconds, default 1) is how long the cloud shows in between; with `pause: 0` the first word turns straight into the next once it has held, letter shapes blending puff by puff (over the next word's `form` seconds), first where the old word is and then outward, so a longer word grows out of a shorter one.
 
 ### Examples
 
@@ -96,7 +96,7 @@ struct ContentView: View {
 }
 ```
 
-`SkyOptions` has the same names and defaults as the web options (`speed`, `coverage`, `shadow`, `cloudScale`, `direction`, `seed`, `palette`, `colors`, `gradient`, `quality`, `fps`, `planes`, `trailLife`, `respectReducedMotion`). Changing the value updates the sky live. `SkyController` sends planes (`flyPlane()`), forms shapes (`showShape(.text("hi"))` or `.image(cgImage)`, with the same `form`, `hold`, `fade`, `density` and `queue` settings) and renders stills (`snapshot(width:height:)`). The view stops drawing when nothing moves (speed 0 or Reduce Motion) and wakes up when something changes.
+`SkyOptions` has the same names and defaults as the web options (`speed`, `coverage`, `shadow`, `cloudScale`, `direction`, `seed`, `palette`, `colors`, `gradient`, `quality`, `fps`, `planes`, `trailLife`, `respectReducedMotion`). Changing the value updates the sky live. `SkyController` sends planes (`flyPlane()`), forms shapes (`showShape(.text("hi"))` or `.image(cgImage)`, with the same `form`, `hold`, `fade`, `density`, `queue` and `pause` settings) and renders stills (`snapshot(width:height:)`). The view stops drawing when nothing moves (speed 0 or Reduce Motion) and wakes up when something changes.
 
 Also included:
 

@@ -3,7 +3,7 @@
 //   swift run sky-render --width 1600 --height 1000 --seconds 30 --out sky.png
 //   options: --seed N --coverage 0..1 --shadow 0..1 --palette day|summer|pastel --scale 2 --direction left|right
 //            --text hello | --text one,two (chained) | --heart (start forming a shape at time 0), --plane
-//            --form/--hold/--fade seconds, --density 0..1
+//            --form/--hold/--fade seconds, --density 0..1, --pause seconds between chained words (0 = straight from one to the next)
 import Foundation
 import CoreGraphics
 import ImageIO
@@ -12,7 +12,7 @@ import SkyKit
 var opts = SkyOptions()
 var width = 1600, height = 1000, seconds = 0.0, scale = 2.0, out = "sky.png"
 var shapeText: String? = nil, plane = false, heart = false, shapeX = 0.5
-var form = 5.0, hold = 5.0, fade = 7.0, density = 0.5
+var form = 5.0, hold = 5.0, fade = 7.0, density = 0.5, pause = 1.0
 
 /// The heart used by the web demos (SVG path, viewBox 100×92), drawn at 220 px tall.
 func heartImage() -> CGImage? {
@@ -57,6 +57,7 @@ while !args.isEmpty {
     case "--hold": hold = Double(value()) ?? hold
     case "--fade": fade = Double(value()) ?? fade
     case "--density": density = Double(value()) ?? density
+    case "--pause": pause = Double(value()) ?? pause
     case "--plane": plane = true                        // a plane from (0, 0.7) to (1, 0.75) at time 0
     case let other:
         FileHandle.standardError.write("unknown option \(other)\n".data(using: .utf8)!); exit(2)
@@ -68,7 +69,7 @@ do {
     let start = Date()
     let image = try renderer.renderImage(width: width, height: height, pixelsPerPoint: scale, seconds: seconds) { r in
         for (i, word) in (shapeText ?? "").split(separator: ",").enumerated()   // one,two: each forms after the last has melted
-        where !r.showShape(.text(String(word)), x: shapeX, form: form, hold: hold, fade: fade, density: density, queue: i > 0) {
+        where !r.showShape(.text(String(word)), x: shapeX, form: form, hold: hold, fade: fade, density: density, queue: i > 0, pause: pause) {
             FileHandle.standardError.write("could not build the shape\n".data(using: .utf8)!)
         }
         if heart, let img = heartImage(), !r.showShape(.image(img), x: shapeX, size: 0.36, form: form, hold: hold, fade: fade, density: density) { FileHandle.standardError.write("could not build the heart\n".data(using: .utf8)!) }

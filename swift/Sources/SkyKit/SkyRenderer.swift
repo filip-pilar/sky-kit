@@ -51,14 +51,22 @@ public final class SkyRenderer {
         var patch: MTLTexture?; var patchView = SIMD4<Double>(0, 0, 1, 1); var patchUV = SIMD2<Double>(1, 1); var patchReady = false
         var density = 0.5                                   // how dense the finished shape is (0.5 = like the clouds around)
         var src: MTLTexture?; var srcRect = SIMD4<Double>(0, 0, 1, 1)   // map of the cloud it is made from (only that cloud gives way)
-        var cloudAt = SIMD2<Double>(0, 0)                   // where that cloud is (the next queued shape forms near it)
+        var cloudAt = SIMD2<Double>(0, 0)                   // where that cloud is (the next queued shape forms on it)
+        var prev: (texture: MTLTexture, rect: SIMD4<Double>, thickness: Double)?   // the shape it turns straight from
+        var area = SIMD4<Double>(0, 0, 1, 1)                // the live patch's area (both shapes while one turns into the other)
         init(texture: MTLTexture, rect: SIMD4<Double>, t0: Double, form: Double, hold: Double, fade: Double, thickness: Double, blend: Double) {
             self.texture = texture; self.rect = rect; self.t0 = t0; self.form = form; self.hold = hold; self.fade = fade
             self.thickness = thickness; self.blend = blend
         }
-        var end: Double { t0 + form + hold + fade + 0.5 }
+        var holdEnd: Double { t0 + form + hold }
+        var end: Double { t0 + form + hold + fade }
     }
-    private struct PendingShape { let mask: ShapeMask; let x, y, size, form, hold, fade, density: Double; var near: SIMD2<Double>? = nil }
+    private struct PendingShape {
+        let mask: ShapeMask; let x, y, size, form, hold, fade, density, pause: Double
+        var near: SIMD2<Double>? = nil    // form on the cloud there (the previous shape's)
+        var startAt: Double? = nil        // start forming then (the previous shape's end + pause)
+        var from: Shape? = nil            // turn straight from this shape (pause 0)
+    }
     private var planes: [Plane] = []
     private var nextPlane = 8.0
     private var shape: Shape?
@@ -67,7 +75,7 @@ public final class SkyRenderer {
 
     // GPU parameter blocks (all float4, so Swift and Metal layouts match)
     private struct GPUColors { var top: SIMD4<Float>, mid: SIMD4<Float>, low: SIMD4<Float> }
-    private struct CloudParams { var a, b, c, d, shapeRect: SIMD4<Float>; var sky: GPUColors; var srcRect: SIMD4<Float>; var e: SIMD4<Float> }
+    private struct CloudParams { var a, b, c, d, shapeRect: SIMD4<Float>; var sky: GPUColors; var srcRect, e, prevRect: SIMD4<Float> }
     private struct CompositeParams { var a, far, near, patch, patch2, mask, shapeAM: SIMD4<Float>; var sky: GPUColors }
 
     public init(device: MTLDevice? = MTLCreateSystemDefaultDevice(), options: SkyOptions = SkyOptions()) throws {
@@ -183,7 +191,8 @@ public final class SkyRenderer {
             shapeRect: SIMD4<Float>(shape?.rect ?? SIMD4(0, 0, 1, 1)),
             sky: gpuColors(),
             srcRect: SIMD4<Float>(shape?.srcRect ?? SIMD4(0, 0, 1, 1)),
-            e: SIMD4(Float(shape?.density ?? 0.5), 0, 0, 0))
+            e: SIMD4(Float(shape?.density ?? 0.5), amount > 0 && shape?.prev != nil ? 1 : 0, Float(shape?.prev?.thickness ?? 0), 0),
+            prevRect: SIMD4<Float>(shape?.prev?.rect ?? SIMD4(0, 0, 1, 1)))
     }
     private func paint(_ def: LayerDef, _ s: Snap, strip: Int, _ cb: MTLCommandBuffer) {
         let rp = MTLRenderPassDescriptor()
@@ -198,7 +207,7 @@ public final class SkyRenderer {
         }
         var p = cloudParams(def, x0: s.x0, y0: 0, time: s.time, targetHeight: cacheH, amount: 0)
         enc.setFragmentBytes(&p, length: MemoryLayout<CloudParams>.stride, index: 0)
-        enc.setFragmentTexture(emptyTexture, index: 0); enc.setFragmentTexture(emptyTexture, index: 1)
+        enc.setFragmentTexture(emptyTexture, index: 0); enc.setFragmentTexture(emptyTexture, index: 1); enc.setFragmentTexture(emptyTexture, index: 2)
         enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
         enc.endEncoding()
     }
@@ -209,7 +218,7 @@ public final class SkyRenderer {
         sh.patchReady = false
         let amt = shapeAmount(at: simTime), melt = shapeMelt(at: simTime)
         guard amt > 0, melt < 1, layers.count == 2 else { return }
-        let upp = viewH / Double(cacheH), r = sh.rect, fade = sh.blend
+        let upp = viewH / Double(cacheH), r = sh.area, fade = sh.blend
         let scroll = dir * layers[1].def.speed * simTime, vw = Double(width) / unit
         let x0 = max(r.x, scroll - fade), x1 = min(r.x + r.z, scroll + vw + fade)
         let y0 = max(r.y, -fade), y1 = min(r.y + r.w, viewH + fade)
@@ -236,6 +245,7 @@ public final class SkyRenderer {
         var p = cloudParams(layers[1].def, x0: x0, y0: y0, time: simTime, targetHeight: h, amount: amt, melt: melt)
         enc.setFragmentBytes(&p, length: MemoryLayout<CloudParams>.stride, index: 0)
         enc.setFragmentTexture(sh.texture, index: 0); enc.setFragmentTexture(sh.src ?? emptyTexture, index: 1)
+        enc.setFragmentTexture(sh.prev?.texture ?? emptyTexture, index: 2)
         enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
         enc.endEncoding()
         sh.patchView = SIMD4(x0 - scroll, y0, Double(w) * upp, Double(h) * upp)   // view-relative rect of what was drawn
@@ -273,9 +283,15 @@ public final class SkyRenderer {
         simTime += sdt
         updatePlanes(sdt)
         for i in layers.indices { advance(i, cb) }
-        if let sh = shape, simTime > sh.end {   // melted back into its cloud; the next queued shape forms near it
-            shape = nil
-            if !shapeQueue.isEmpty { var n = shapeQueue.removeFirst(); n.near = sh.cloudAt; placeShape(n) }
+        if let sh = shape {
+            if simTime > sh.holdEnd && simTime < sh.end, var n = shapeQueue.first, n.pause == 0 {
+                // pause 0: the next shape takes over right away and this one's outline turns straight into it
+                shapeQueue.removeFirst(); n.from = sh; placeShape(n)
+            } else if simTime > sh.end {
+                // melted back into its cloud: the next queued shape forms on the same cloud after its pause
+                shape = nil
+                if !shapeQueue.isEmpty { var n = shapeQueue.removeFirst(); n.near = sh.cloudAt; n.startAt = sh.end + max(0, n.pause); placeShape(n) }
+            }
         }
     }
 
@@ -374,13 +390,14 @@ public final class SkyRenderer {
 
     /// A real cloud near (x, y) reshapes into the shape, holds it, then reshapes back into itself.
     /// x, y: centre, 0…1 of the view (y = 0 at the bottom); size: fraction of the view height; times in seconds;
-    /// density 0…1 (0.5 = like the clouds around). queue: wait for the current shape to melt, then form on the
-    /// same cloud (word, cloud, next word, cloud, …). Needs speed > 0: shapes form as the sky moves on.
+    /// density 0…1 (0.5 = like the clouds around). queue: wait for the current shape, then form on the same cloud
+    /// (word, cloud, next word, cloud, …); pause: seconds the cloud shows in between (0 = the current shape's outline
+    /// turns straight into this one after its hold). Needs speed > 0: shapes form as the sky moves on.
     @discardableResult
     public func showShape(_ source: SkyShapeSource, x: Double = 0.5, y: Double = 0.6, size: Double = 0.32,
-                          form: Double = 5, hold: Double = 5, fade: Double = 7, density: Double = 0.5, queue: Bool = false) -> Bool {
+                          form: Double = 5, hold: Double = 5, fade: Double = 7, density: Double = 0.5, queue: Bool = false, pause: Double = 1) -> Bool {
         guard let mask = ShapeMask.make(source) else { return false }
-        let p = PendingShape(mask: mask, x: x, y: y, size: size, form: form, hold: hold, fade: fade, density: min(1, max(0, density)))
+        let p = PendingShape(mask: mask, x: x, y: y, size: size, form: form, hold: hold, fade: fade, density: min(1, max(0, density)), pause: max(0, pause))
         if queue && (shape != nil || pendingShape != nil || !shapeQueue.isEmpty) { shapeQueue.append(p); return true }
         shapeQueue.removeAll()
         if layers.count == 2 { placeShape(p) } else { pendingShape = p }
@@ -393,8 +410,8 @@ public final class SkyRenderer {
         d.usage = [.shaderRead]
         guard let tex = device.makeTexture(descriptor: d) else { return }
         p.mask.rgba.withUnsafeBytes { tex.replace(region: MTLRegionMake2D(0, 0, p.mask.width, p.mask.height), mipmapLevel: 0, withBytes: $0.baseAddress!, bytesPerRow: p.mask.width * 4) }
-        let near = layers[1]
-        let t0 = simTime + 0.2
+        let near = layers[1], from = p.from
+        let t0 = from != nil ? simTime : max(simTime + 0.2, p.startAt ?? 0)
         let vw = Double(width) / unit
         // size is a fraction of the view height, shrunk if needed so the shape fits 70% of the view width
         let silH = min(p.size * viewH, 0.7 * vw * Double(p.mask.silhouetteHeight) / Double(p.mask.silhouetteWidth))
@@ -408,18 +425,30 @@ public final class SkyRenderer {
         let tEnd = t0 + p.form + p.hold + p.fade, s0 = dir * near.def.speed * t0, s1 = dir * near.def.speed * tEnd
         let fits = 2 * hw + 0.06 < vw
         let allowed = SIMD4(fits ? scroll + hw + 0.03 : scroll + vw / 2, hh + 0.03, fits ? scroll + vw - hw - 0.03 : scroll + vw / 2, viewH - hh - 0.03)
-        let found = cloudNear(x: p.near?.x ?? cx, y: p.near?.y ?? cy, need: p.mask.silhouetteArea * k * k, times: [t0, tMid, tEnd],
-                              x0: min(s0, s1) - 0.3, x1: max(s0, s1) + vw + 0.3, allowed: allowed, box: SIMD2(hw, hh), same: p.near != nil)
-        if let found {
-            cx = min(max(found.centre.x, allowed.x), allowed.z)
-            cy = min(max(found.centre.y, allowed.y), allowed.w)
+        let found = from != nil ? nil : cloudNear(x: p.near?.x ?? cx, y: p.near?.y ?? cy, need: p.mask.silhouetteArea * k * k, times: [t0, tMid, tEnd],
+                                                  x0: min(s0, s1) - 0.3, x1: max(s0, s1) + vw + 0.3, allowed: allowed, box: SIMD2(hw, hh), same: p.near != nil)
+        if let from { cx = from.rect.x + from.rect.z / 2; cy = from.rect.y + from.rect.w / 2 }   // right where the previous shape is
+        else if let found { cx = found.centre.x; cy = found.centre.y }
+        if from != nil || found != nil {
+            cx = min(max(cx, allowed.x), allowed.z)
+            cy = min(max(cy, allowed.y), allowed.w)
         }
-        let sh = Shape(texture: tex, rect: SIMD4(cx - wUnits / 2, cy - hUnits / 2, wUnits, hUnits),
-                       t0: t0, form: p.form, hold: p.hold, fade: p.fade, thickness: p.mask.thickness,
-                       blend: 0.15 * Double(p.mask.pad) * hUnits / Double(p.mask.height))
+        let rect = SIMD4(cx - wUnits / 2, cy - hUnits / 2, wUnits, hUnits)
+        var blend = 0.15 * Double(p.mask.pad) * hUnits / Double(p.mask.height)   // inside the masks' all-zero margins
+        if let from { blend = min(blend, from.blend) }
+        let sh = Shape(texture: tex, rect: rect, t0: t0, form: p.form, hold: p.hold, fade: p.fade, thickness: p.mask.thickness, blend: blend)
         sh.density = p.density
-        sh.src = found?.src; sh.srcRect = found?.srcRect ?? SIMD4(0, 0, 1, 1)
-        sh.cloudAt = found?.centre ?? SIMD2(cx, cy)
+        sh.area = rect
+        if let from {
+            // the previous shape's cloud and mask carry over: its outline turns into this one's
+            sh.src = from.src; sh.srcRect = from.srcRect; sh.cloudAt = from.cloudAt
+            sh.prev = (from.texture, from.rect, from.thickness)
+            let r = from.rect, lo = SIMD2(min(r.x, rect.x), min(r.y, rect.y))
+            sh.area = SIMD4(lo.x, lo.y, max(r.x + r.z, rect.x + rect.z) - lo.x, max(r.y + r.w, rect.y + rect.w) - lo.y)
+        } else {
+            sh.src = found?.src; sh.srcRect = found?.srcRect ?? SIMD4(0, 0, 1, 1)
+            sh.cloudAt = found?.centre ?? SIMD2(cx, cy)
+        }
         shape = sh
     }
 
@@ -443,7 +472,7 @@ public final class SkyRenderer {
             enc.setRenderPipelineState(cloudPipeline)
             var p = cloudParams(layers[1].def, x0: x0, y0: y0, time: t, targetHeight: gh, amount: 0, upp: step)
             enc.setFragmentBytes(&p, length: MemoryLayout<CloudParams>.stride, index: 0)
-            enc.setFragmentTexture(emptyTexture, index: 0); enc.setFragmentTexture(emptyTexture, index: 1)
+            enc.setFragmentTexture(emptyTexture, index: 0); enc.setFragmentTexture(emptyTexture, index: 1); enc.setFragmentTexture(emptyTexture, index: 2)
             enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
             enc.endEncoding()
             guard let blit = cb.makeBlitCommandEncoder() else { return nil }

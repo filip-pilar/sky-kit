@@ -52,6 +52,9 @@ export interface ShapeOptions {
   density?: number;
   /** Wait for the current shape to melt, then form on the same cloud (word, cloud, next word, ...). Default false. */
   queue?: boolean;
+  /** Queued only: seconds the cloud shows between the two shapes. 0 = the current shape's outline turns straight
+   * into this one once it has held (word, next word, ...; this one's `form` is how long that takes). Default 1. */
+  pause?: number;
 }
 
 export interface PlaneOptions {
