@@ -25,7 +25,7 @@ The cloud shader is expensive (about 80 noise evaluations per pixel). It doesn't
 
 1. Each layer keeps **three snapshot textures**, A, B and C, a bit wider than the view (0.3 cloud units of margin each side), at about 1.25 px per CSS pixel (`quality`).
 2. A shows the clouds at sky time `t`, B at `t + 2 s`, both already scrolled to where the view will be at that time.
-3. **Every frame** the composite shader only slides A and B (`scroll = speed × time`) and crossfades from A to B over the 2 s. That's 4 texture reads per pixel.
+3. **Every frame** the composite shader only slides A and B and crossfades from A to B over the 2 s. That's 4 texture reads per pixel. The slide offset (`speed × time − snapshot start`) is subtracted on the CPU in double precision, so it stays exact however long the sky runs.
 4. Meanwhile C (`t + 4 s`) is painted **one vertical strip per frame**, 24 strips per snapshot, so no frame does a full paint.
 5. When time passes B, the snapshots rotate: A ← B ← C, and the old A becomes the new C.
 
@@ -33,11 +33,11 @@ Measured on an M4 at 2880×1800: about 2 ms per frame (vs. 35–40 ms if the clo
 
 Changing `coverage`, `shadow`, `seed`, `direction` or colours repaints all snapshots at once (a short hitch); `cloudScale` or `quality` reallocates them.
 
-## Web extras (all cheap)
+## Extras (all cheap; same in web and Swift)
 
-- **Pointer push**: up to 12 recent pointer "gusts" (position + displacement) go to the composite shader, which offsets where the snapshots are sampled with a Gaussian falloff. Gusts rise in 0.15 s and decay over about 1.1 s, so clouds stretch along the swipe and settle back exactly.
+- **Pointer push**: up to 12 recent pointer "gusts" (position + displacement) go to the composite shader, which offsets where the snapshots are sampled with a Gaussian falloff. Gusts rise in 0.15 s and decay over about 1.1 s, so clouds stretch along the swipe and settle back exactly. The total push is capped at 0.15 cloud units (inside the 0.3 side margin) and fades out near the top and bottom so it never samples outside a snapshot.
 - **Planes**: composite-shader overlay between the far and near layers (near clouds pass in front). Two engine trails that merge, widen, wobble, drift with the far layer and fade over `trailLife` seconds.
-- **Shapes**: text or an image is turned into a silhouette, blurred twice (tight blur = the shape, wide blur = a halo) and uploaded as a texture placed in the near layer's *cloud space*. The cloud recipe adds the shape (scaled by the cloud's own billow noise, so it keeps cloud texture) and thins the cloud around it. The shape's strength ramps 0 → 1 → 0 over `form`/`hold`/`fade` seconds; since it is baked into snapshots that are 2 s apart and crossfaded, it condenses and melts smoothly at no per-frame cost, and drifts with the clouds automatically.
+- **Shapes**: text or an image is turned into a silhouette, blurred twice (tight blur = the shape, wide blur = a halo) and uploaded as a texture placed in the near layer's *cloud space*. The cloud recipe adds the shape (scaled by the cloud's own billow noise, so it keeps cloud texture) and thins the cloud around it. The shape's strength ramps 0 → 1 → 0 over `form`/`hold`/`fade` seconds; since it is baked into snapshots that are 2 s apart and crossfaded, it condenses and melts smoothly at no per-frame cost, and drifts with the clouds automatically. Changing `direction` clears a shape (its placement belongs to the old drift). In Swift the silhouette comes from CoreText (SF Pro Rounded, heavy) or a `CGImage`, blurred with the same box-blur code (`ShapeMask.swift`).
 
 ## Web ↔ Metal conventions
 
