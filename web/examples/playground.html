@@ -16,12 +16,17 @@
   button{font:inherit;margin:4px 4px 0 0;padding:4px 9px;border-radius:6px;border:0;cursor:pointer}
   .sec{margin-top:8px;padding-top:6px;border-top:1px solid rgba(255,255,255,.15);font-weight:600;opacity:.8}
   .hint{opacity:.6;margin-top:6px}
+  .file input{display:block;width:100%;margin-top:4px;font:inherit;color:inherit}
+  .head{display:flex;justify-content:space-between;align-items:center}
+  .head button{margin:0;padding:2px 8px}
+  #show{position:fixed;top:12px;right:12px;z-index:5;display:none}
+  @media (max-width:520px){#panel{left:12px;width:auto;max-height:70vh;overflow:auto}}
 </style>
 </head>
 <body>
 <div id="sky"></div>
 <div id="panel">
-  <b>sky-kit playground</b>
+  <div class="head"><b>sky-kit playground</b><button id="hideBtn">Hide</button></div>
   <div class="r"><label>Speed</label><output id="o-speed"></output><input id="speed" type="range" min="0" max="4" step="0.05"></div>
   <div class="r"><label>Clouds</label><output id="o-coverage"></output><input id="coverage" type="range" min="0" max="1" step="0.01"></div>
   <div class="r"><label>Shadow</label><output id="o-shadow"></output><input id="shadow" type="range" min="0" max="1" step="0.01"></div>
@@ -33,9 +38,10 @@
   <div class="sec">Shapes</div>
   <input type="text" id="shapeText" value="hello" aria-label="Shape text">
   <button id="textBtn">Form text</button><button id="heartBtn">Form a heart</button>
-  <label class="chk" style="margin-top:6px">Image/SVG: <input type="file" id="file" accept="image/*"></label>
-  <div class="hint">Move the pointer over the sky · H hides this panel</div>
+  <label class="file" style="display:block;margin-top:6px">Image / SVG silhouette <input type="file" id="file" accept="image/*"></label>
+  <div class="hint">Move the pointer (or drag a finger) over the sky · H hides this panel</div>
 </div>
+<button id="show">Controls</button>
 <script type="module">
 import { createSky } from '../src/sky.js';
 const sky = createSky(document.getElementById('sky'), { interactive: true, planes: true });
@@ -53,7 +59,12 @@ document.getElementById('textBtn').onclick = () => sky.showShape({ text: documen
 const HEART = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 92"><path d="M50 90C20 66 2 48 2 28 2 13 14 2 28 2c10 0 18 6 22 14C54 8 62 2 72 2c14 0 26 11 26 26 0 20-18 38-48 62z" fill="#000"/></svg>');
 document.getElementById('heartBtn').onclick = () => sky.showShape({ image: HEART, size: 0.38 });
 document.getElementById('file').onchange = e => { const f = e.target.files[0]; if (f) sky.showShape({ image: URL.createObjectURL(f), size: 0.38 }); };
-addEventListener('keydown', e => { if (e.key.toLowerCase() === 'h' && e.target.tagName !== 'INPUT') document.getElementById('panel').classList.toggle('hidden'); });
+const panel = document.getElementById('panel'), show = document.getElementById('show');
+const setHidden = h => { panel.classList.toggle('hidden', h); show.style.display = h ? 'block' : 'none'; };
+document.getElementById('hideBtn').onclick = () => setHidden(true);
+show.onclick = () => setHidden(false);
+if (matchMedia('(max-width: 520px)').matches) setHidden(true);   // phones: start with the sky visible
+addEventListener('keydown', e => { if (e.key.toLowerCase() === 'h' && e.target.tagName !== 'INPUT') setHidden(!panel.classList.contains('hidden')); });
 </script>
 </body>
 </html>
