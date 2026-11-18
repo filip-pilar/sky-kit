@@ -17,11 +17,13 @@ struct SkyDemoApp: App {
 }
 
 struct DemoView: View {
-    @State private var options = SkyOptions()
+    @State private var options = SkyOptions(interactive: true, planes: true)
+    @State private var text = "hello"
+    @StateObject private var sky = SkyController()
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
-            SkyView(options).ignoresSafeArea()
+            SkyView(options, controller: sky).ignoresSafeArea()
             VStack(alignment: .leading, spacing: 8) {
                 Text("Hello, sky").font(.system(size: 34, weight: .bold, design: .rounded)).foregroundStyle(.white)
                     .shadow(color: .blue.opacity(0.4), radius: 8)
@@ -32,6 +34,15 @@ struct DemoView: View {
                 Picker("Palette", selection: $options.palette) {
                     ForEach(SkyOptions.Palette.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) }
                 }.pickerStyle(.segmented).frame(width: 300)
+                HStack {
+                    Toggle("Pointer pushes clouds", isOn: $options.interactive)
+                    Toggle("Planes", isOn: $options.planes)
+                    Button("Fly a plane") { sky.flyPlane() }
+                }
+                HStack {
+                    TextField("Text", text: $text).frame(width: 140)
+                    Button("Form it in the clouds") { sky.showShape(.text(text.isEmpty ? "☁" : text)) }
+                }
             }
             .padding(16)
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))

@@ -7,7 +7,7 @@ Endless drifting painterly clouds on a bright blue sky — for the web (WebGL2, 
 - Fills whatever container you put it in, at full device resolution.
 - Cheap: about 2 ms per frame at 2880×1800 on an M4 (clouds are painted into snapshots that slide, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)).
 - Pauses when off-screen or when the tab is hidden; holds still for reduced-motion users.
-- Web extras: the pointer gently pushes clouds; planes with contrails; text, emoji or SVG shapes that form out of the clouds and melt back.
+- Extras (web and Swift): the pointer or a finger gently pushes clouds; planes with contrails; text, emoji or SVG/PNG shapes that form out of the clouds and melt back.
 
 ## Web
 
@@ -23,7 +23,7 @@ sky.flyPlane();
 sky.destroy();
 ```
 
-The container needs a size (any CSS size). Overlay content can go inside it; the sky canvas sits underneath and ignores pointer events.
+The container needs a size (any CSS size). Overlay content can go inside it: the sky canvas sits underneath (the container becomes `isolation: isolate`) and ignores pointer events. Options set to `undefined` mean "use the default".
 
 ### React
 
@@ -41,7 +41,7 @@ function Hero() {
 }
 ```
 
-Props are the options below; changing a prop updates the sky live. The wrapper is plain JS (`createElement`, no JSX), works with React 17+, StrictMode and SSR (the sky is created in an effect). TypeScript types are included (`sky.d.ts`, `react.d.ts`).
+Props are the options below; changing a prop updates the sky live, and removing one returns it to its default. The ref exposes `flyPlane`, `showShape`, `clearShape`, `pause`, `play`, `snapshot`, `canvas` and `options`. The wrapper is plain JS (`createElement`, no JSX), works with React 17+, StrictMode and SSR (the sky is created in an effect). TypeScript types are included (`sky.d.ts`, `react.d.ts`).
 
 ### Options
 
@@ -83,22 +83,26 @@ Swift Package in `swift/`. Add it as a local package (or by URL once hosted), th
 import SkyKit
 
 struct ContentView: View {
-    @State private var options = SkyOptions(coverage: 0.6)
+    @State private var options = SkyOptions(coverage: 0.6, interactive: true)
+    @StateObject private var sky = SkyController()
+
     var body: some View {
-        SkyView(options).ignoresSafeArea()
+        SkyView(options, controller: sky)
+            .ignoresSafeArea()
+            .overlay(alignment: .bottom) {
+                Button("Say hi") { sky.showShape(.text("hi")) }
+            }
     }
 }
 ```
 
-`SkyOptions` has the same names and defaults as the web options (`speed`, `coverage`, `shadow`, `cloudScale`, `direction`, `seed`, `palette`, `colors`, `quality`, `fps`, `respectReducedMotion`). Changing the value updates the sky live.
+`SkyOptions` has the same names and defaults as the web options (`speed`, `coverage`, `shadow`, `cloudScale`, `direction`, `seed`, `palette`, `colors`, `quality`, `fps`, `interactive`, `planes`, `trailLife`, `respectReducedMotion`). Changing the value updates the sky live. `SkyController` sends planes (`flyPlane()`), forms shapes (`showShape(.text("hi"))` or `.image(cgImage)`) and renders stills (`snapshot(width:height:)`). With `interactive`, mouse hover (macOS, iPad pointer) or a finger drag pushes the clouds. The view stops drawing when nothing moves (speed 0 or Reduce Motion) and wakes up when something changes.
 
 Also included:
 
 - `SkyRenderer` — the Metal renderer on its own, for custom views or offscreen use. `renderImage(width:height:seconds:)` returns a `CGImage` (wallpapers, thumbnails, tests).
-- `swift run SkyDemo` — a macOS window with the sky and a few controls.
-- `swift run sky-render --width 1600 --height 1000 --seconds 30 --out sky.png` — render a still from the command line.
-
-Not in the Swift version yet: pointer push, planes and shapes (web only for now).
+- `swift run SkyDemo` — a macOS window with the sky, controls, planes and text shapes.
+- `swift run sky-render --width 1600 --height 1000 --seconds 30 --out sky.png` — render a still from the command line (`--text hello`, `--plane`, `--seed`, `--palette`, …).
 
 ## Keeping web and Swift identical
 
@@ -109,6 +113,15 @@ cd swift && swift run sky-render --width 1600 --height 1000 --seconds 30 --out o
 ```
 
 then open `web/examples/parity.html` in a browser at device pixel ratio 2. It renders the same frame in WebGL and compares every pixel. Current result: mean difference 0.116/255, max 8/255, no pixels more than 8 apart.
+
+With extras: `sky-render --seconds 10 --text hello --plane --out out/swift-extras.png` and `parity.html?text=hello&plane=1&seconds=10&png=../../swift/out/swift-extras.png`. Sky, plane and contrail match; the only differences are inside the letters, because the browser and CoreText draw the rounded font slightly differently.
+
+## Known limits
+
+- WebGL2 is required on the web (all current browsers have it).
+- Shapes form as the sky moves; with `speed: 0` they don't appear.
+- One shape at a time; a new one replaces the previous.
+- Noise coordinates keep growing with sky time. After several days of continuous running at speed 1 the cloud shading could start to get grainy (float precision). Not a concern for normal sessions.
 
 ## Layout
 
