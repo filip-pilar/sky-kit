@@ -84,9 +84,8 @@ uniform vec4 uShapeRect;      // cloud-space x0, y0, width, height of the shape 
 uniform float uShapeAmt;      // 1 while a shape is active (only the live patch over its area uses it)
 uniform float uShapeThick;    // 0 = thin strokes (text) .. 1 = a solid shape (a heart, an emoji)
 uniform float uCopyN;         // how many nearby clouds the shape is made from (0..4)
-uniform vec4 uCopyBox[4];     // picked cloud k's home box: centre x, y, half width, half height (cloud space);
-                              // a piece torn off a big cloud: centre x, y, -radius, radius
-uniform vec4 uCopyMove[4];    // its offset from home now (x, y), how far it has turned into the shape (0..1), how far it has travelled (0..1)
+uniform vec4 uCopyBox[4];     // picked cloud k's home box: centre x, y, half width, half height (cloud space)
+uniform vec4 uCopyMove[4];    // its offset from home now (x, y), how far it has turned into the shape (0..1), how far it has travelled (0..1, unused)
 uniform vec4 uCopyTarget[4];  // its centre now (x, y); how far its part of the shape reaches from there; its own radius
                               // (the shape starts growing within 40% of it)
 uniform float uShapeSolo;     // how far the shape has formed when no cloud was near enough to pick
@@ -153,26 +152,15 @@ float withShape(float v, inout float bil, vec2 p, float thr, bool lite, out floa
   float t = uShapeThick;
   int n = int(uCopyN + 0.5);
   // the picked clouds: each has left its home box and is somewhere on its way, as an exact copy
-  float hole = 0.0, dent = 0.0, vC = thr - 1.0, bilC = bil;
+  float hole = 0.0, vC = thr - 1.0, bilC = bil;
   const float MARGIN = 0.035;                                       // clear sky around a picked cloud's box (as in the planner)
   float rag = lite ? 0.0 : fbm(p * 7.0 + vec2(3.1, 5.9), 2) * 0.12;   // (how ragged the growth front is)
   for (int k = 0; k < 4; k++){
     if (k >= n) break;
     vec4 box = uCopyBox[k], mv = uCopyMove[k], tg = uCopyTarget[k];
     vec2 home = p - box.xy, q = home - mv.xy;
-    float wc, dq, g = 1.0;
-    if (box.z < 0.0) {
-      // a round piece of a big cloud: soft edged, it detaches gradually and leaves a soft dent
-      float r = box.w;
-      g = smoothstep(0.0, 0.15, mv.w);
-      dent = max(dent, (1.0 - smoothstep(0.45 * r, r, length(home))) * g);
-      wc = (1.0 - smoothstep(0.45 * r, r, length(q))) * g;
-      dq = max(0.0, length(q) - 0.45 * r);
-    } else {
-      hole = max(hole, boxW(home, box, MARGIN));
-      wc = boxW(q, box, MARGIN);
-      dq = boxDist(q, box);
-    }
+    hole = max(hole, boxW(home, box, MARGIN));
+    float wc = boxW(q, box, MARGIN), dq = boxDist(q, box);
     float vb = thr - 0.3;                                          // (clear sky, away from the copy)
     if (wc > 0.0){
       float bb = 0.35;
@@ -189,7 +177,7 @@ float withShape(float v, inout float bil, vec2 p, float thr, bool lite, out floa
     S = max(S, smoothstep(0.0, 1.0, (mv.z * (tg.z + band) - d) / band));
   }
   if (n == 0) S = uShapeSolo;
-  float amb = mix(v, -1.0, hole) - dent * 0.7;
+  float amb = mix(v, -1.0, hole);
   vec4 m = shapeAt(p);
   // near thin strokes (text) other cloud turns into thin wisps (dense cloud thins so the letters stay
   // readable, faint cloud thickens a little); a solid shape just merges with the clouds it touches
@@ -485,9 +473,9 @@ function planShape(grid, gw, gh, ox, oy, sil, silH, need, viewH) {
   };
   // candidates: whole clouds (not cut by the map's edge), not far from the shape, mostly in view, not a
   // bank several times what the shape needs; closer and bigger first. If none qualifies, look again with
-  // looser limits (a shape should always be made from some cloud).
+  // looser limits, then wider still (a shape should be made from some cloud whenever there is one).
   const cand = [];
-  for (const [dMax, areaMax, seenMin] of [[2, 3, 0.5], [3.5, 8, 0.25]]) {
+  for (const [dMax, areaMax, seenMin] of [[2, 3, 0.5], [3.5, 8, 0.25], [5, 12, 0.2]]) {
     if (cand.length) break;
     blobs.forEach((b, l) => {
       if (b.border || b.cells < 4) return;
@@ -520,37 +508,21 @@ function planShape(grid, gw, gh, ox, oy, sil, silH, need, viewH) {
     picked.push({ box, centre: centre(b), radius: Math.sqrt(b.cells * cell / Math.PI), dist: c.dist, cells });
     have += b.cells * cell;
   }
-  // not enough separate clouds near (in a cloudier sky they join into big masses): tear round pieces off
-  // the nearest big clouds instead (soft-edged puffs; a big cloud keeps a soft dent where a piece came
-  // from). box = [x, y, -radius, radius] marks a piece.
-  if (have < need && picked.length < 4) {
-    const r = Math.min(Math.max(Math.sqrt((need - have) / Math.PI), 0.06), 0.6 * silH);
-    const rc = Math.ceil(r / step);
-    const spots = [];
-    for (let y = rc; y < gh - rc; y += 2) for (let x = rc; x < gw - rc; x += 2) {
+  // no separate cloud qualifies (they have all joined into big masses): the shape grows out of the nearest
+  // big cloud instead, from its point closest to the shape (that cloud stays put; a box of size 0 moves nothing)
+  if (!picked.length) {
+    let best = null;
+    for (let y = 0; y < gh; y++) for (let x = 0; x < gw; x++) {
       if (!cloud[y * gw + x]) continue;
-      const cy = oy + (y + 0.5) * step;
-      if (!(cy - r >= 0 && cy + r <= viewH)) continue;   // in view
-      const d = distToShape([ox + (x + 0.5) * step, cy]);
-      if (d <= 2 * silH) spots.push({ dist: d, x, y });
+      const c = [ox + (x + 0.5) * step, oy + (y + 0.5) * step];
+      if (!(c[1] >= 0 && c[1] <= viewH)) continue;
+      const d = distToShape(c);
+      if (d <= 5 * silH && (best === null || d < best.d)) best = { d, c };
     }
-    spots.sort((a, b) => a.dist !== b.dist ? a.dist - b.dist : (a.y !== b.y ? a.y - b.y : a.x - b.x));
-    for (const sp of spots) {
-      if (picked.length >= 4 || have >= need) break;
-      const cells = [sp.x - rc - M, sp.y - rc - M, sp.x + rc + M, sp.y + rc + M];
-      if (overlapsPicked(cells, picked)) continue;
-      let inDisc = 0, inCloud = 0;   // the piece must be mostly cloud
-      for (let yy = sp.y - rc; yy <= sp.y + rc; yy++) for (let xx = sp.x - rc; xx <= sp.x + rc; xx++) {
-        const dx = (xx - sp.x) * step, dy = (yy - sp.y) * step;
-        if (dx * dx + dy * dy <= r * r) { inDisc++; if (cloud[yy * gw + xx]) inCloud++; }
-      }
-      if (!(inCloud >= 0.6 * inDisc)) continue;
-      const c = [ox + (sp.x + 0.5) * step, oy + (sp.y + 0.5) * step];
-      picked.push({ box: [c[0], c[1], -r, r], centre: c, radius: r, dist: sp.dist, cells });
-      have += inCloud * cell;
-    }
+    if (!best) return [];
+    const far = Math.max(...[[sil[0], sil[1]], [sil[2], sil[1]], [sil[0], sil[3]], [sil[2], sil[3]]].map(([x, y]) => Math.hypot(x - best.c[0], y - best.c[1])));
+    return [{ box: [best.c[0], best.c[1], 0, 0], centre: best.c, target: best.c, reach: far, radius: 0, rank: 0 }];
   }
-  if (!picked.length) return [];
   // the order clouds go in (closest first) and their parts of the shape (left to right, matching the
   // clouds' order left to right, so their paths don't cross)
   const rank = new Array(picked.length).fill(0);

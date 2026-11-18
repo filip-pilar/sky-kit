@@ -1,4 +1,5 @@
 import Foundation
+import simd
 
 /// Picks the nearby clouds a shape is made from (port of planShape in sky.js; keep the two identical).
 ///
@@ -7,8 +8,7 @@ import Foundation
 /// it, and the part of the shape each one becomes.
 struct ShapePlan {
     struct Copy {
-        var box: SIMD4<Double>      // home box: centre x, y, half width, half height (cloud space); for a piece
-                                    // torn off a big cloud: centre x, y, -radius, radius
+        var box: SIMD4<Double>      // home box: centre x, y, half width, half height (cloud space)
         var centre: SIMD2<Double>   // the cloud's centre (density weighted)
         var target: SIMD2<Double>   // where its centre goes: the middle of its part of the shape
         var reach: Double           // how far its part of the shape extends from its centre
@@ -73,9 +73,9 @@ struct ShapePlan {
         }
         // candidates: whole clouds (not cut by the map's edge), not far from the shape, mostly in view, not a
         // bank several times what the shape needs; closer and bigger first. If none qualifies, look again
-        // with looser limits (a shape should always be made from some cloud).
+        // with looser limits, then wider still (a shape should be made from some cloud whenever there is one).
         var cand: [(score: Double, index: Int, dist: Double)] = []
-        for (dMax, areaMax, seenMin) in [(2.0, 3.0, 0.5), (3.5, 8.0, 0.25)] where cand.isEmpty {
+        for (dMax, areaMax, seenMin) in [(2.0, 3.0, 0.5), (3.5, 8.0, 0.25), (5.0, 12.0, 0.2)] where cand.isEmpty {
             for (l, b) in blobs.enumerated() where !b.border && b.cells >= 4 {
                 let area = Double(b.cells) * cell, d = distToShape(centre(b)), seen = Double(b.seen) / Double(b.cells)
                 guard d <= dMax * silH, seen >= seenMin, area <= areaMax * need else { continue }
@@ -110,36 +110,21 @@ struct ShapePlan {
             picked.append(Pick(box: box, centre: centre(b), radius: (Double(b.cells) * cell / .pi).squareRoot(), dist: c.dist, cells: cells))
             have += Double(b.cells) * cell
         }
-        // not enough separate clouds near (in a cloudier sky they join into big masses): tear round pieces
-        // off the nearest big clouds instead (soft-edged puffs; a big cloud keeps a soft dent where a piece
-        // came from). box = (x, y, -radius, radius) marks a piece.
-        if have < need && picked.count < 4 {
-            let r = min(max(((need - have) / .pi).squareRoot(), 0.06), 0.6 * silH)
-            let rc = Int((r / step).rounded(.up))
-            var spots: [(dist: Double, x: Int, y: Int)] = []
-            for y in stride(from: rc, to: gh - rc, by: 2) { for x in stride(from: rc, to: gw - rc, by: 2) where cloud[y * gw + x] {
-                let cy = origin.y + (Double(y) + 0.5) * step
-                guard cy - r >= 0 && cy + r <= viewH else { continue }   // in view
-                let d = distToShape(SIMD2(origin.x + (Double(x) + 0.5) * step, cy))
-                if d <= 2.0 * silH { spots.append((d, x, y)) }
+        // no separate cloud qualifies (they have all joined into big masses): the shape grows out of the
+        // nearest big cloud instead, from its point closest to the shape (that cloud stays put; a box of
+        // size 0 moves nothing)
+        if picked.isEmpty {
+            var best: (d: Double, c: SIMD2<Double>)? = nil
+            for y in 0..<gh { for x in 0..<gw where cloud[y * gw + x] {
+                let c = SIMD2(origin.x + (Double(x) + 0.5) * step, origin.y + (Double(y) + 0.5) * step)
+                guard c.y >= 0 && c.y <= viewH else { continue }
+                let d = distToShape(c)
+                if d <= 5 * silH && (best == nil || d < best!.d) { best = (d, c) }
             } }
-            spots.sort { $0.dist != $1.dist ? $0.dist < $1.dist : ($0.y != $1.y ? $0.y < $1.y : $0.x < $1.x) }
-            for sp in spots {
-                if picked.count >= 4 || have >= need { break }
-                let cells = (sp.x - rc - M, sp.y - rc - M, sp.x + rc + M, sp.y + rc + M)
-                if overlapsPicked(cells, picked) { continue }
-                var inDisc = 0, inCloud = 0   // the piece must be mostly cloud
-                for yy in (sp.y - rc)...(sp.y + rc) { for xx in (sp.x - rc)...(sp.x + rc) {
-                    let dx = Double(xx - sp.x) * step, dy = Double(yy - sp.y) * step
-                    if dx * dx + dy * dy <= r * r { inDisc += 1; if cloud[yy * gw + xx] { inCloud += 1 } }
-                } }
-                guard Double(inCloud) >= 0.6 * Double(inDisc) else { continue }
-                let c = SIMD2(origin.x + (Double(sp.x) + 0.5) * step, origin.y + (Double(sp.y) + 0.5) * step)
-                picked.append(Pick(box: SIMD4(c.x, c.y, -r, r), centre: c, radius: r, dist: sp.dist, cells: cells))
-                have += Double(inCloud) * cell
-            }
+            guard let b = best else { return [] }
+            let far = [SIMD2(sil.x, sil.y), SIMD2(sil.z, sil.y), SIMD2(sil.x, sil.w), SIMD2(sil.z, sil.w)].map { simd_distance($0, b.c) }.max()!
+            return [Copy(box: SIMD4(b.c.x, b.c.y, 0, 0), centre: b.c, target: b.c, reach: far, radius: 0, rank: 0)]
         }
-        guard !picked.isEmpty else { return [] }
         // the order clouds go in (closest first) and their parts of the shape (left to right, matching
         // the clouds' order left to right, so their paths don't cross)
         let byDist = picked.indices.sorted { picked[$0].dist != picked[$1].dist ? picked[$0].dist < picked[$1].dist : $0 < $1 }

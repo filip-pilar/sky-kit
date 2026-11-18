@@ -64,7 +64,7 @@ static float3 skyAt(float v, constant SkyColors& c) {
 // shapeRect = cloud-space (x0, y0, width, height) of the shape image
 // copyBox[k] = home box of picked cloud k: centre x, y, half width, half height (cloud space); a piece torn
 //              off a big cloud: centre x, y, -radius, radius
-// copyMove[k] = its offset from home now (x, y), how far it has turned into the shape (0..1), how far it has travelled (0..1)
+// copyMove[k] = its offset from home now (x, y), how far it has turned into the shape (0..1), how far it has travelled (0..1, unused)
 // copyTarget[k] = the cloud's centre now (x, y); how far its part of the shape reaches from there; the cloud's own radius
 // (the shape starts growing within 40% of it)
 // shapeExtra = (number of picked clouds, how far the shape is formed when there are none, 0, 0)
@@ -111,26 +111,15 @@ static float withShape(float v, thread float& bil, float2 p, float thr, bool lit
     float t = P.d.w;
     int n = int(P.shapeExtra.x + 0.5);
     // the picked clouds: each has left its home box and is somewhere on its way, as an exact copy
-    float hole = 0.0, dent = 0.0, vC = thr - 1.0, bilC = bil;
+    float hole = 0.0, vC = thr - 1.0, bilC = bil;
     const float MARGIN = 0.035;                                       // clear sky around a picked cloud's box (as in the planner)
     float rag = lite ? 0.0 : fbm(p * 7.0 + float2(3.1, 5.9), 2) * 0.12;   // (how ragged the growth front is)
     for (int k = 0; k < 4; k++) {
         if (k >= n) break;
         float4 box = P.copyBox[k], mv = P.copyMove[k], tg = P.copyTarget[k];
         float2 home = p - box.xy, q = home - mv.xy;
-        float wc, dq, g = 1.0;
-        if (box.z < 0.0) {
-            // a round piece of a big cloud: soft edged, it detaches gradually and leaves a soft dent
-            float r = box.w;
-            g = smoothstep(0.0, 0.15, mv.w);
-            dent = max(dent, (1.0 - smoothstep(0.45 * r, r, length(home))) * g);
-            wc = (1.0 - smoothstep(0.45 * r, r, length(q))) * g;
-            dq = max(0.0, length(q) - 0.45 * r);
-        } else {
-            hole = max(hole, boxW(home, box, MARGIN));
-            wc = boxW(q, box, MARGIN);
-            dq = boxDist(q, box);
-        }
+        hole = max(hole, boxW(home, box, MARGIN));
+        float wc = boxW(q, box, MARGIN), dq = boxDist(q, box);
         float vb = thr - 0.3;                                         // (clear sky, away from the copy)
         if (wc > 0.0) {
             float bb = 0.35;
@@ -147,7 +136,7 @@ static float withShape(float v, thread float& bil, float2 p, float thr, bool lit
         S = max(S, smoothstep(0.0, 1.0, (mv.z * (tg.z + band) - d) / band));
     }
     if (n == 0) S = P.shapeExtra.y;
-    float amb = mix(v, -1.0, hole) - dent * 0.7;
+    float amb = mix(v, -1.0, hole);
     float4 m = shapeAt(p, P, shape);
     // near thin strokes (text) other cloud turns into thin wisps (dense cloud thins so the letters stay
     // readable, faint cloud thickens a little); a solid shape just merges with the clouds it touches
