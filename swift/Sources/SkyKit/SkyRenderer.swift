@@ -392,7 +392,7 @@ public final class SkyRenderer {
         let cx = p.x * vw + dir * near.def.speed * (t0 + p.form + p.hold / 2), cy = p.y * viewH
         shape = Shape(texture: tex, rect: SIMD4(cx - wUnits / 2, cy - hUnits / 2, wUnits, hUnits),
                       t0: t0, form: p.form, hold: p.hold, fade: p.fade, thickness: p.mask.thickness,
-                      blend: 0.25 * Double(p.mask.pad) * hUnits / Double(p.mask.height))
+                      blend: 0.15 * Double(p.mask.pad) * hUnits / Double(p.mask.height))
     }
 
     // MARK: - Offscreen

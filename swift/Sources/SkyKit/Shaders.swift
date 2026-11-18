@@ -100,47 +100,56 @@ static float2 gatherFrom(float2 p, constant CloudParams& P, texture2d<float> sha
     float2 grad = float2(maskAt(su + float2(e.x, 0.0), shape).a - maskAt(su - float2(e.x, 0.0), shape).a,
                          maskAt(su + float2(0.0, e.y), shape).a - maskAt(su - float2(0.0, e.y), shape).a) / 0.16;
     toward = grad / max(length(grad), 0.3);
-    float pull = 0.12 * P.d.y * (1.0 - P.d.z) * smoothstep(0.03, 0.8, F) * (1.0 - smoothstep(0.65, 1.0, F));
+    // it relaxes as the clouds are given back while melting (so they come back where they were, unsquashed)
+    float pull = 0.15 * P.d.y * (1.0 - smoothstep(-0.25, 0.1, F - (1.25 - P.d.z * 1.55)))
+               * smoothstep(0.03, 0.8, F) * (1.0 - smoothstep(0.5, 1.0, F));
     return p - toward * pull;
 }
-// v: the surrounding cloud's density here; p: unwarped position (the shape's puffs stay put)
-// so: while melting, where to read the shape's mask from (closer in, so the shape spreads out)
-static float withShape(float v, float2 p, float thr, float bil, float2 so, constant CloudParams& P, texture2d<float> shape) {
+// v: the surrounding cloud's density here; p: unwarped position (the shape's puffs stay put);
+// so: while melting, how far its pieces have drifted outward; lite: for the soft self-shadow samples
+// (no fine noise: they only need the rough shape, and they run four times per pixel)
+static float withShape(float v, float2 p, float thr, float bil, float2 so, bool lite, constant CloudParams& P, texture2d<float> shape) {
     if (P.d.y <= 0.0) return v;
     float4 m = shapeAt(p, P, shape);
     if (m.w <= 0.0 && m.y <= 0.0) return v;
     float a = P.d.y, mt = P.d.z, F = m.w, t = P.d.w;
     float touch = smoothstep(thr - 0.2, thr + 0.1, v);                // 1 inside or right next to existing cloud
     float edge = smoothstep(0.0, 0.25, F);                            // fades the effect out toward the wide area's edge
-    // the clouds of the wide area drift in (see gatherFrom) and fade as they arrive near the shape; by the
-    // end of forming the sky around it has emptied (that cloud went into the shape). Melting runs it back.
-    float back = 1.0 - smoothstep(0.0, 0.8, mt);
-    float arrive = smoothstep(0.45, 0.9, F) * smoothstep(0.1, 0.8, a);
-    float thin = (arrive * 0.5 + edge * a * a * 0.6) * back;
-    // close to the shape: a lumpy cumulus bank gathers over it (a smooth, wide footprint), then turns into the
-    // shape; melting, the shape turns back into a bank that spreads outward and thins into the sky around
-    float bank = max(smoothstep(0.0, 0.45, a) * (1.0 - smoothstep(0.4, 1.0, a)) * (1.0 - mt),
-                     smoothstep(0.0, 0.3, mt) * (1.0 - smoothstep(0.35, 0.95, mt)));
-    float foot = smoothstep(0.5 - 0.45 * mt, 1.0 - 0.45 * mt, F);
-    float lump = fbm(p * 4.5 + float2(11.3, 4.1), 3);
-    float bankV = thr + (foot - 0.7) * 0.5 + lump * 0.65 + touch * 0.15 - (1.0 - bank) * 0.45;   // lumpy, with gaps
-    float amb = smax(v - thin, bankV, 0.08);
-    // the shape's own cloud; while melting it swells from the shape to its halo to the wide area, and thins
-    float md = smoothstep(0.0, 0.35, mt);
-    float4 ms = mt > 0.0 ? shapeAt(p + so, P, shape) : m;
-    float R = mix(ms.x, ms.y * 0.8, md * mix(0.9, 0.6, t));   // puffs up (thin strokes more) before breaking apart
+    // The surrounding cloud. Forming: every cloud of the wide area gives some of itself to the shape, more
+    // the closer it is: it drifts in (gatherFrom) and shrinks, and right around the shape it is used up.
+    // Cloud that drifts over the shape is cut to it and becomes part of it. Melting: the clouds come back
+    // from the shape outward (a ragged front), a little thicker where the shape's pieces reach them.
+    float ragged = lite ? 0.0 : fbm(p * 3.0 + float2(17.1, 3.3), 2) * 0.5;
+    float front = F - (1.25 - mt * 1.55) + ragged;                    // > 0: given back already
+    float kept = (1.0 - smoothstep(0.0, 0.25, front)) * (1.0 - smoothstep(0.7, 1.0, mt));
+    float wide = edge * (0.35 + 0.65 * F) * 0.45 * smoothstep(0.1, 0.95, a);
+    float used = smoothstep(0.55, 0.95, F) * smoothstep(0.35, 0.95, a) * 0.4;   // in step with the shape growing
+    float cut = m.y * smoothstep(0.0, 0.5, a) * 0.6;                  // around the shape's outline
+    float outside = 1.0 - smoothstep(0.3, 0.65, m.x);                 // (cloud over the shape itself stays)
+    float dq = (front - 0.12) / 0.15;
+    float swell = edge * 0.1 * exp(-dq * dq) * smoothstep(0.0, 0.15, mt) * (1.0 - smoothstep(0.7, 1.0, mt))
+                * smoothstep(thr - 0.12, thr + 0.05, v);              // only clouds that are there get thicker
+    // a cloud that gives itself up shrinks rather than turning see-through: its edge gets a little sharper
+    float thin = (wide + used + cut) * outside * kept;
+    float amb = thr + (v - thin - thr) / (1.0 - 0.45 * min(thin / 0.85, 1.0)) + swell;
+    // The shape's own cloud: bumps about a letter-stroke wide; solid shapes also get a domed body (densest
+    // in the middle, so it shades round) and cauliflower lumps that shape the outline.
+    float4 ms = mt > 0.0 ? shapeAt(p + so, P, shape) : m;                     // melting: its pieces drift outward
+    float R = ms.x;
     if (R <= 0.001) return amb;
     float B = ms.z;
-    // bumps about a letter-stroke wide; solid shapes also get a domed body (densest in the middle, so
-    // it shades round) and cauliflower lumps that shape the outline
-    float lumps = fbm(p * 5.5 + float2(5.1, 7.3), 3);
-    float big = fbm(p * 9.0 + float2(3.7, 1.9), 3);
-    float small = fbm(p * 26.0 + float2(8.1, 2.3), 2);
+    float lumps = lite ? 0.0 : fbm(p * 5.5 + float2(5.1, 7.3), 3);
+    float big = lite ? 0.0 : fbm(p * 9.0 + float2(3.7, 1.9), 3);
+    float small = lite ? 0.0 : fbm(p * 26.0 + float2(8.1, 2.3), 2);
     float fill = thr + (R - 0.5) * mix(0.6, 0.45, t) + ((B - 0.5) * 0.3 + lumps * 0.3 + 0.05) * t
                + big * mix(0.3, 0.15, t) + small * mix(0.15, 0.05, t) + (bil - 0.35) * 0.2;
-    fill += (lumps * 0.4 + big * 0.1) * md - mt * 0.5 - mt * mt * mt * 0.5;   // melting: breaks into puffs and goes into the bank
-    // when each bit condenses: puff by puff, edges last, sooner where cloud is already there
-    float when = clamp(0.62 - big * 1.5 - (R - 0.55) * 0.35 - touch * 0.15, 0.42, 1.0);   // after the bank has gathered
+    // melting: it breaks into pieces (whole puffs: stroke-sized for text, bigger for solid shapes), which
+    // shrink and are gone by about three quarters of the way
+    float br = smoothstep(0.0, 0.45, mt);
+    fill += (mix(big, lumps, t) * 0.45 - 0.1) * br - mt * 0.25 - mt * mt * mt * 0.5;
+    fill = thr + (fill - thr) / (1.0 - 0.4 * br);                     // the pieces shrink rather than turn see-through
+    // forming: when each bit condenses: puff by puff, edges last, much sooner where cloud has drifted onto it
+    float when = clamp(0.75 - big * 1.5 - (R - 0.55) * 0.35 - touch * 0.3, 0.2, 1.0);
     float g = when - a;
     fill -= 0.7 * (g + sqrt(g * g + 0.004));                          // ~1.4·max(0, g) without a crease (creases light badly)
     fill = mix(-1.0, fill, smoothstep(0.0, 0.1, R));
@@ -153,7 +162,7 @@ static float2 cumulus(float2 p, float2 pg, float2 so, float scale, float2 seed, 
     float base = fbm(q * 0.7 + w * 0.6, 4);
     float bil = billow(q * 2.0 + w, 3);
     float thr = mix(0.22, -0.12, cov);
-    float v = withShape(base + 0.15 * (bil - 0.35), p, thr, bil, so, P, shape);
+    float v = withShape(base + 0.15 * (bil - 0.35), p, thr, bil, so, false, P, shape);
     float4 m = P.d.y > 0.0 ? shapeAt(p + so, P, shape) : float4(0.0);   // follows the shape as it spreads out
     // a shape's rim fades out slowly like other clouds' edges (more for solid shapes); the outline stays put
     float rim = smoothstep(0.0, 0.3, m.y) * (1.0 - smoothstep(0.35, 0.8, m.x)) * mix(0.35, 1.0, P.d.w) * smoothstep(0.0, 0.5, P.d.y) * (1.0 - smoothstep(0.2, 0.6, P.d.z));
@@ -166,7 +175,7 @@ static float cumulusLite(float2 p, float2 pg, float2 so, float scale, float2 see
     float2 q = pg * float2(2.2, 3.4) / scale + seed;
     float2 w = float2(fbm(q * 0.5 + morph, 2), fbm(q * 0.5 + 5.2 - morph, 2));
     float thr = mix(0.22, -0.12, cov);
-    float v = withShape(fbm(q * 0.7 + w * 0.6, 3), p, thr, 0.35, so, P, shape);
+    float v = withShape(fbm(q * 0.7 + w * 0.6, 3), p, thr, 0.35, so, true, P, shape);
     return smoothstep(thr, thr + 0.22, v);
 }
 
@@ -183,7 +192,7 @@ fragment float4 sky_cloud(VOut in [[stage_in]], constant CloudParams& P [[buffer
     float cov = P.b.z * mix(1.0, 0.75 + 0.35 * (1.0 - smoothstep(0.1, 0.8, vv)), P.c.y);   // edges in order: reversed edges are undefined
     float2 toward;
     float2 pg = gatherFrom(p, P, shape, toward), dg = pg - p;         // same nudge for the shadow samples
-    float2 so = toward * mix(0.05, 0.22, P.d.w) * smoothstep(0.0, 0.6, P.d.z);   // melting: the shape spreads outward
+    float2 so = toward * mix(0.07, 0.13, P.d.w) * smoothstep(0.1, 0.8, P.d.z);   // melting: its pieces drift outward
     float2 D0 = cumulus(p, pg, so, scale, seed, cov, P.b.x, P, shape);
     float alpha = smoothstep(0.0, 0.61, D0.x);
     float2 grad = float2(dfdx(D0.y), -dfdy(D0.y)) / upp;
@@ -248,27 +257,23 @@ static float contrails(float2 p, constant ExtraParams& E, thread float& planeDot
     return tr;
 }
 
-// The far clouds take part in a shape too: they drift in toward it and fade as they arrive (they are far
-// behind it, so they only clear the sky around it); melting runs it back. Returns where to read the far
-// layer and how much of it to fade.
-static float3 farGather(float2 p, constant CompositeParams& P, texture2d<float> mask) {
-    if (P.shapeAM.x <= 0.0) return float3(p, 0.0);
+// The far clouds take part in a shape too: they fade where the near clouds give themselves to the shape
+// (they are far behind it, so they only clear the sky around it), and come back while it melts.
+static float farFade(float2 p, constant CompositeParams& P, texture2d<float> mask) {
+    if (P.shapeAM.x <= 0.0) return 0.0;
     float2 su = (p - P.mask.xy) / P.mask.zw;
-    if (su.x < 0.0 || su.y < 0.0 || su.x > 1.0 || su.y > 1.0) return float3(p, 0.0);
+    if (su.x < 0.0 || su.y < 0.0 || su.x > 1.0 || su.y > 1.0) return 0.0;
     constexpr sampler s(filter::linear, address::clamp_to_edge);
-    #define MA(uv) mask.sample(s, float2((uv).x, 1.0 - (uv).y)).a
-    float F = MA(su);
-    if (F <= 0.0) return float3(p, 0.0);
-    float2 e = float2(0.08) / P.mask.zw;
-    float2 grad = float2(MA(su + float2(e.x, 0.0)) - MA(su - float2(e.x, 0.0)), MA(su + float2(0.0, e.y)) - MA(su - float2(0.0, e.y))) / 0.16;
-    #undef MA
-    float2 toward = grad / max(length(grad), 0.3);
+    float F = mask.sample(s, float2(su.x, 1.0 - su.y)).a;
+    if (F <= 0.0) return 0.0;
     float a = P.shapeAM.x, mt = P.shapeAM.y;
-    // (no drift for the far clouds: displacing their snapshots squeezes them into streaks)
-    float pull = 0.0;
-    float edge = smoothstep(0.0, 0.25, F), back = 1.0 - smoothstep(0.0, 0.8, mt);
-    float arrive = smoothstep(0.45, 0.9, F) * smoothstep(0.1, 0.8, a);
-    return float3(p - toward * pull, clamp((arrive * 0.5 + edge * a * a * 0.6) * back * 1.4, 0.0, 1.0));
+    // same as the near clouds' share (withShape), as a fade: there is no drift here (displacing the far
+    // snapshots squeezes their clouds into streaks) and no ragged front (cheap)
+    float edge = smoothstep(0.0, 0.25, F);
+    float kept = (1.0 - smoothstep(0.0, 0.25, F - (1.25 - mt * 1.55))) * (1.0 - smoothstep(0.7, 1.0, mt));
+    float wide = edge * (0.35 + 0.65 * F) * 0.45 * smoothstep(0.1, 0.95, a);
+    float used = smoothstep(0.55, 0.95, F) * smoothstep(0.35, 0.95, a) * 0.4;   // in step with the shape growing
+    return clamp((wide + used) * kept * 1.3, 0.0, 1.0);
 }
 static float4 layerAt(texture2d<float> A, texture2d<float> B, float4 w, float2 p, float viewH) {
     constexpr sampler s(filter::linear, address::clamp_to_edge);
@@ -288,8 +293,7 @@ fragment float4 sky_composite(VOut in [[stage_in]], constant CompositeParams& P 
     float3 col = skyAt(frag.y / P.a.y, P.sky);
     float sd = length(ph - float2(0.10 * P.a.x / P.a.y, 1.05));
     col += float3(1.0, 0.97, 0.88) * (0.20 * exp(-sd * 2.2) + 0.22 * exp(-sd * 9.0));
-    float3 fg = farGather(p, P, mask);
-    float4 far = layerAt(farA, farB, P.far, fg.xy, P.a.w) * (1.0 - fg.z);
+    float4 far = layerAt(farA, farB, P.far, p, P.a.w) * (1.0 - farFade(p, P, mask));
     col = col * (1.0 - far.a) + far.rgb;
     if (E.info.x >= 0.0 || E.info.y >= 0.0) {
         float pd;

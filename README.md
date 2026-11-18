@@ -7,7 +7,7 @@ Endless drifting painterly clouds on a bright blue sky — for the web (WebGL2, 
 - Fills whatever container you put it in, at full device resolution.
 - Cheap: about 2 ms per frame at 2880×1800 on an M4 (clouds are painted into snapshots that slide, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)).
 - Pauses when off-screen or when the tab is hidden; holds still for reduced-motion users.
-- Extras (web and Swift): planes with contrails; text, emoji or SVG/PNG shapes: the clouds around drift in and gather into the shape, which later spreads back out and dissolves into the sky.
+- Extras (web and Swift): planes with contrails; text, emoji or SVG/PNG shapes that the clouds around gather into, and that later break up into small clouds that rejoin the sky.
 
 ## Web
 
@@ -64,7 +64,7 @@ Props are the options below; changing a prop updates the sky live, and removing 
 
 Methods: `set(options)`, `pause()`, `play()`, `flyPlane({ from, to }?)`, `showShape({ text | image, x, y, size, form, hold, fade })`, `clearShape()`, `snapshot()` (PNG data URL), `destroy()`.
 
-`showShape` accepts text/emoji or an image (URL, `<img>`, canvas): transparent images use their alpha, opaque ones use dark = shape. The clouds from a wide area around drift in and gather into it over `form` seconds (default 5), it holds (5), then it spreads back out and dissolves into the surrounding sky (7). It drifts with the clouds and is placed so it sits at `x, y` in the middle of its hold; it shrinks to fit 70% of the view width on narrow screens. Shapes form as the sky moves, so they need `speed > 0`.
+`showShape` accepts text/emoji or an image (URL, `<img>`, canvas): transparent images use their alpha, opaque ones use dark = shape. The clouds of a wide area around it drift in, shrink and become part of it over `form` seconds (default 5); it holds (5); then it breaks into small pieces that shrink away while the clouds around come back (7). It drifts with the clouds and is placed so it sits at `x, y` in the middle of its hold; it shrinks to fit 70% of the view width on narrow screens. Shapes form as the sky moves, so they need `speed > 0`.
 
 ### Examples
 
@@ -114,7 +114,7 @@ cd swift && swift run sky-render --width 1600 --height 1000 --seconds 30 --out o
 
 then open `web/examples/parity.html` in a browser at device pixel ratio 2. It renders the same frame in WebGL and compares every pixel. Current result: mean difference 0.131/255, max 9/255, no pixels more than 8 apart.
 
-Shapes: `sky-render --seconds 4.5 --heart --out out/swift-heart-4.5.png` and `parity.html?heart=1&seconds=4.5&png=../../swift/out/swift-heart-4.5.png` match too (mean 0.139/255, max 14/255). With extras: `sky-render --seconds 10 --text hello --plane --out out/swift-extras.png` and `parity.html?text=hello&plane=1&seconds=10&png=../../swift/out/swift-extras.png`. Sky, plane and contrail match; the only differences are in and around the letters, because the browser and CoreText draw the rounded font slightly differently.
+Shapes: `sky-render --seconds 4.5 --heart --out out/swift-heart-4.5.png` and `parity.html?heart=1&seconds=4.5&png=../../swift/out/swift-heart-4.5.png` match too (mean about 0.17/255 while forming and melting). With extras: `sky-render --seconds 10 --text hello --plane --out out/swift-extras.png` and `parity.html?text=hello&plane=1&seconds=10&png=../../swift/out/swift-extras.png`. Sky, plane and contrail match; the only differences are in and around the letters, because the browser and CoreText draw the rounded font slightly differently.
 
 ## Known limits
 

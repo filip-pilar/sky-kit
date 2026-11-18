@@ -30,11 +30,12 @@ struct ShapeMask {
     /// Margin around the silhouette, in mask pixels (room for the wide area).
     let pad: Int
 
-    /// Built at 160 px per silhouette height (the radii below are for 220 px, scaled by `ms`), like sky.js.
-    static func make(_ source: SkyShapeSource, pixelHeight px: Int = 160) -> ShapeMask? {
+    /// Built at 100 px per silhouette height (it is heavily blurred anyway; the radii below are for 220 px,
+    /// scaled by `ms`), like sky.js.
+    static func make(_ source: SkyShapeSource, pixelHeight px: Int = 100) -> ShapeMask? {
         let ms = Double(px) / 220
         guard let (sil, sw, sh) = silhouette(source, px: px) else { return nil }
-        let pad = Int((Double(sh) * 1.4).rounded())   // room for the wide area the shape gathers from
+        let pad = Int((Double(sh) * 2.2).rounded())   // room for the wide area the shape gathers from
         let w = sw + pad * 2, h = sh + pad * 2
         var alpha = [Float](repeating: 0, count: w * h)
         for y in 0..<sh { for x in 0..<sw { alpha[(y + pad) * w + x + pad] = sil[y * sw + x] } }
@@ -45,10 +46,10 @@ struct ShapeMask {
         let near = blur(alpha, w, h, radius: (16 + 8 * thick) * ms), wide = blur(alpha, w, h, radius: 44 * ms, scale: 2)
         // the wide area: a very wide blur, flattened (square root) so it reaches well out, ~1 at the shape, and faded to exactly 0 over the
         // outer part of the margin (the patch blends into the ordinary clouds there)
-        let far = blur(alpha, w, h, radius: Double(sh) * 0.9, scale: 4)
+        let far = blur(alpha, w, h, radius: Double(sh) * 1.2, scale: 4)
         let farMax = max(1e-3, far.max() ?? 0)
         func win(_ d: Int) -> Float {
-            let x = min(1, max(0, (Float(d) - 0.3 * Float(pad)) / (0.5 * Float(pad)))); return x * x * (3 - 2 * x)
+            let x = min(1, max(0, (Float(d) - 0.17 * Float(pad)) / (0.28 * Float(pad)))); return x * x * (3 - 2 * x)   // all-zero over the outer 17%
         }
         var rgba = [UInt8](repeating: 0, count: w * h * 4)
         for y in 0..<h {
