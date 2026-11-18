@@ -50,7 +50,7 @@ export interface ShapeOptions {
   fade?: number;
   /** How dense the finished shape is, 0..1. Default 0.5 (like the clouds around). */
   density?: number;
-  /** Wait for the current shape to melt, then form on a cloud near it (word, cloud, next word, ...). Default false. */
+  /** Wait for the current shape to melt, then form on the same cloud (word, cloud, next word, ...). Default false. */
   queue?: boolean;
 }
 

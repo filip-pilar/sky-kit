@@ -64,7 +64,7 @@ Props are the options below; changing a prop updates the sky live, and removing 
 
 Methods: `set(options)`, `pause()`, `play()`, `flyPlane({ from, to }?)`, `showShape({ text | image, x, y, size, form, hold, fade, density, queue })`, `clearShape()`, `snapshot()` (PNG data URL), `destroy()`.
 
-`showShape` accepts text/emoji or an image (URL, `<img>`, canvas): transparent images use their alpha, opaque ones use dark = shape. It is put on a real cloud near `x, y`, which reshapes into it over `form` seconds (default 5); it holds (5); then it reshapes back into that cloud (7), which stays. `density` (0–1, default 0.5 = like the clouds around) makes the finished shape wispier or more solid. `queue: true` waits for the current shape to melt and then forms on a cloud near it, so `showShape({ text: 'one' })` followed by `showShape({ text: 'two', queue: true })` gives word, cloud, next word, cloud.
+`showShape` accepts text/emoji or an image (URL, `<img>`, canvas): transparent images use their alpha, opaque ones use dark = shape. It is put on a real cloud near `x, y`, which reshapes into it over `form` seconds (default 5); it holds (5); then it reshapes back into that cloud (7), which stays. `density` (0–1, default 0.5 = like the clouds around) makes the finished shape wispier or more solid. `queue: true` waits for the current shape to melt and then forms on the same cloud (when it is still there), so `showShape({ text: 'one' })` followed by `showShape({ text: 'two', queue: true })` gives word, cloud, next word, cloud.
 
 ### Examples
 
@@ -114,7 +114,7 @@ cd swift && swift run sky-render --width 1600 --height 1000 --seconds 30 --out o
 
 then open `web/examples/parity.html` in a browser at device pixel ratio 2. It renders the same frame in WebGL and compares every pixel. Current result: mean difference 0.131/255, max 9/255, no pixels more than 8 apart.
 
-Shapes: `sky-render --seconds 4.5 --heart --out out/swift-heart-4.5.png` and `parity.html?heart=1&seconds=4.5&png=../../swift/out/swift-heart-4.5.png` match too (mean about 0.17/255 while forming and melting). With extras: `sky-render --seconds 10 --text hello --plane --out out/swift-extras.png` and `parity.html?text=hello&plane=1&seconds=10&png=../../swift/out/swift-extras.png`. Sky, plane and contrail match; the only differences are in and around the letters, because the browser and CoreText draw the rounded font slightly differently.
+Shapes: `sky-render --seconds 4.5 --heart --out out/swift-heart-4.5.png` and `parity.html?heart=1&seconds=4.5&png=../../swift/out/swift-heart-4.5.png` match too (mean about 0.17/255 while forming and melting). With extras: `sky-render --seconds 10 --text hello --plane --out out/swift-extras.png` and `parity.html?text=hello&plane=1&seconds=10&png=../../swift/out/swift-extras.png`. Sky, plane and contrail match; the letters differ, because the browser and CoreText draw the rounded font slightly differently, and since a word is placed by its width the two ports can put the same word a little apart (or, now and then, on a different cloud).
 
 ## Known limits
 

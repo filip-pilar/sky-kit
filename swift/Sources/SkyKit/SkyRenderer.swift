@@ -409,7 +409,7 @@ public final class SkyRenderer {
         let fits = 2 * hw + 0.06 < vw
         let allowed = SIMD4(fits ? scroll + hw + 0.03 : scroll + vw / 2, hh + 0.03, fits ? scroll + vw - hw - 0.03 : scroll + vw / 2, viewH - hh - 0.03)
         let found = cloudNear(x: p.near?.x ?? cx, y: p.near?.y ?? cy, need: p.mask.silhouetteArea * k * k, times: [t0, tMid, tEnd],
-                              x0: min(s0, s1) - 0.3, x1: max(s0, s1) + vw + 0.3, allowed: allowed, box: SIMD2(hw, hh))
+                              x0: min(s0, s1) - 0.3, x1: max(s0, s1) + vw + 0.3, allowed: allowed, box: SIMD2(hw, hh), same: p.near != nil)
         if let found {
             cx = min(max(found.centre.x, allowed.x), allowed.z)
             cy = min(max(found.centre.y, allowed.y), allowed.w)
@@ -426,7 +426,7 @@ public final class SkyRenderer {
     /// The cloud to put a shape on (findCloud), from a map of the near clouds over x0…x1 (all that is on screen
     /// while the shape lives) at the moment it starts forming, times[0]; its centre, and a map of that cloud grown
     /// a little into where it reaches later on (sourceCells), so only that cloud gives way (srcRect: cloud-space x0, y0, w, h).
-    private func cloudNear(x: Double, y: Double, need: Double, times: [Double], x0: Double, x1: Double, allowed: SIMD4<Double>, box: SIMD2<Double>)
+    private func cloudNear(x: Double, y: Double, need: Double, times: [Double], x0: Double, x1: Double, allowed: SIMD4<Double>, box: SIMD2<Double>, same: Bool)
         -> (centre: SIMD2<Double>, src: MTLTexture, srcRect: SIMD4<Double>)? {
         let step = 0.02, y0 = -0.02
         let gw = min(400, Int(ceil((x1 - x0) / step))), gh = Int(ceil((viewH + 0.04) / step))
@@ -459,7 +459,7 @@ public final class SkyRenderer {
             if i == 0 { grid[yy * gw + xx] = a }
             later[yy * gw + xx] = max(later[yy * gw + xx], a)
         } } }
-        guard let best = Self.findCloud(grid: grid, gw: gw, gh: gh, origin: SIMD2(x0, y0), step: step, want: SIMD2(x, y), need: need, allowed: allowed, box: box)
+        guard let best = Self.findCloud(grid: grid, gw: gw, gh: gh, origin: SIMD2(x0, y0), step: step, want: SIMD2(x, y), need: need, allowed: allowed, box: box, same: same)
         else { return nil }
         // where the shape will sit (placeShape clamps it the same way)
         let centre = SIMD2(min(max(best.centre.x, allowed.x), allowed.z), min(max(best.centre.y, allowed.y), allowed.w))
@@ -508,10 +508,11 @@ public final class SkyRenderer {
     /// The cloud a shape is placed on (port of findCloud in sky.js; keep the two identical): of the clouds in
     /// the map (rows bottom-up), the one nearest to `want` whose size is closest to `need` and that best fills a
     /// box the shape's size (half width, half height `box`) with no other cloud in or right next to it, somewhere
-    /// inside `allowed` (x0, y0, x1, y1: where the shape's centre can be so it stays in view). Returns that spot,
+    /// inside `allowed` (x0, y0, x1, y1: where the shape's centre can be so it stays in view). `same`: strongly
+    /// prefer the cloud at `want` (a queued shape reuses the last one's cloud). Returns that spot,
     /// the label of every cell (-1 = no cloud) and the picked cloud's label (nil when there is no cloud).
     static func findCloud(grid: [UInt8], gw: Int, gh: Int, origin: SIMD2<Double>, step: Double, want: SIMD2<Double>, need: Double,
-                          allowed: SIMD4<Double>, box: SIMD2<Double>) -> (centre: SIMD2<Double>, label: [Int32], comp: Int32)? {
+                          allowed: SIMD4<Double>, box: SIMD2<Double>, same: Bool = false) -> (centre: SIMD2<Double>, label: [Int32], comp: Int32)? {
         let n = gw * gh, W = gw + 1
         var label = [Int32](repeating: -1, count: n), sat = [Int32](repeating: 0, count: W * (gh + 1)), all = sat
         let bw = max(1, Int((box.x / step).rounded())), bh = max(1, Int((box.y / step).rounded()))
@@ -528,11 +529,13 @@ public final class SkyRenderer {
         for start in 0..<n where grid[start] > 8 && label[start] < 0 {
             let id = comp; comp += 1
             var stack = [start], mine: [Int] = []; label[start] = id
-            var border = false
+            var border = false, atWant = false
+            let q = (want - origin) / step
             while let i = stack.popLast() {
                 let x = i % gw, y = i / gw
                 mine.append(i)
                 if x == 0 || x == gw - 1 { border = true }
+                if abs(Double(x) + 0.5 - q.x) <= 2.5 && abs(Double(y) + 0.5 - q.y) <= 2.5 { atWant = true }
                 for (nx, ny) in [(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)] where nx >= 0 && ny >= 0 && nx < gw && ny < gh {
                     let j = ny * gw + nx
                     if grid[j] > 8 && label[j] < 0 { label[j] = id; stack.append(j) }
@@ -559,7 +562,7 @@ public final class SkyRenderer {
             guard let spot else { continue }
             let c = spot.c
             let score = exp(-((c.x - want.x) * (c.x - want.x) + (c.y - want.y) * (c.y - want.y)).squareRoot() / 0.35) * exp(-0.6 * abs(log(area / need)))
-                      * (0.05 + spot.s) * (border ? 0.5 : 1)
+                      * (0.05 + spot.s) * (border ? 0.5 : 1) * (same && atWant ? 4 : 1)
             if best == nil || score > best!.score { best = (score, c, id) }
         }
         guard let best else { return nil }

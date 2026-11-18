@@ -394,8 +394,9 @@ function blurAt(alpha, w, h, radius, k) {
  * clouds in the map (opacity 0..255 per cell, rows bottom-up, cell (0, 0) starting at (ox, oy)), the one
  * nearest to (wx, wy) whose size is closest to `need` and that best fills a box the shape's size (half width,
  * half height `box`) with no other cloud in or right next to it, somewhere inside `allowed` (x0, y0, x1, y1:
- * where the shape's centre can be so it stays in view). Returns that spot, the cloud's id `comp` and the
- * cells' ids `label` (or null when there is no cloud).
+ * where the shape's centre can be so it stays in view). `same`: strongly prefer the cloud at (wx, wy) (a
+ * queued shape reuses the last one's cloud). Returns that spot, the cloud's id `comp` and the cells' ids
+ * `label` (or null when there is no cloud).
  */
 /**
  * The map of the cloud a shape is made from (port of SkyRenderer.sourceCells; keep the two identical): its
@@ -432,7 +433,7 @@ function sourceCells(label, comp, later, gw, gh, cx, cy, bw, bh, step) {
   }
   return out;
 }
-function findCloud(grid, gw, gh, ox, oy, step, wx, wy, need, allowed, box) {
+function findCloud(grid, gw, gh, ox, oy, step, wx, wy, need, allowed, box, same = false) {
   const n = gw * gh, W = gw + 1, label = new Int32Array(n).fill(-1), sat = new Int32Array(W * (gh + 1)), all = new Int32Array(W * (gh + 1));
   const bw = Math.max(1, Math.round(box[0] / step)), bh = Math.max(1, Math.round(box[1] / step));
   const sum = (t, xa, ya, xb, yb) => { xa = Math.max(0, xa); ya = Math.max(0, ya); xb = Math.min(gw, xb); yb = Math.min(gh, yb);
@@ -442,11 +443,13 @@ function findCloud(grid, gw, gh, ox, oy, step, wx, wy, need, allowed, box) {
   for (let start = 0; start < n; start++) {
     if (grid[start] <= 8 || label[start] >= 0) continue;
     const stack = [start], mine = []; label[start] = comp;
-    let border = false;
+    let border = false, atWant = false;
+    const qx = (wx - ox) / step, qy = (wy - oy) / step;
     while (stack.length) {
       const i = stack.pop(), x = i % gw, y = (i - x) / gw;
       mine.push(i);
       if (x === 0 || x === gw - 1) border = true;
+      if (Math.abs(x + 0.5 - qx) <= 2.5 && Math.abs(y + 0.5 - qy) <= 2.5) atWant = true;
       for (const [nx, ny] of [[x - 1, y], [x + 1, y], [x, y - 1], [x, y + 1]]) {
         if (nx < 0 || ny < 0 || nx >= gw || ny >= gh) continue;
         const j = ny * gw + nx;
@@ -472,7 +475,7 @@ function findCloud(grid, gw, gh, ox, oy, step, wx, wy, need, allowed, box) {
       if (!spot || s > spot.s) spot = { s, x: px, y: py };
     }
     const score = Math.exp(-Math.hypot(spot.x - wx, spot.y - wy) / 0.35) * Math.exp(-0.6 * Math.abs(Math.log(area / need)))
-                * (0.05 + spot.s) * (border ? 0.5 : 1);
+                * (0.05 + spot.s) * (border ? 0.5 : 1) * (same && atWant ? 4 : 1);
     if (!best || score > best.score) best = { score, x: spot.x, y: spot.y, comp: id };
   }
   return best ? { ...best, label } : null;
@@ -763,7 +766,7 @@ export function createSky(container, options = {}) {
     const fits = 2 * hw + 0.06 < vw;
     const allowed = [fits ? scroll + hw + 0.03 : scroll + vw / 2, hh + 0.03, fits ? scroll + vw - hw - 0.03 : scroll + vw / 2, viewH - hh - 0.03];
     const found = cloudNear(o._near ? o._near[0] : cx, o._near ? o._near[1] : cy, img.area * k * k, [t0, tMid, tEnd],
-                            Math.min(s0, s1) - 0.3, Math.max(s0, s1) + vw + 0.3, allowed, [hw, hh]);
+                            Math.min(s0, s1) - 0.3, Math.max(s0, s1) + vw + 0.3, allowed, [hw, hh], !!o._near);
     if (found) {
       cx = Math.min(Math.max(found.x, allowed[0]), allowed[2]);
       cy = Math.min(Math.max(found.y, allowed[1]), allowed[3]);
@@ -778,7 +781,7 @@ export function createSky(container, options = {}) {
   // the cloud to put a shape on (findCloud), from a map of the near clouds over x0..x1 (all that is on screen
   // while the shape lives) at the moment it starts forming, times[0]; plus a map of that cloud, grown a little
   // into where it reaches later on (times), so only that cloud gives way
-  function cloudNear(x, y, need, times, x0, x1, allowed, box) {
+  function cloudNear(x, y, need, times, x0, x1, allowed, box, same) {
     const step = 0.02, y0 = -0.02;
     const gw = Math.min(400, Math.ceil((x1 - x0) / step)), gh = Math.ceil((viewH + 0.04) / step);
     if (gh <= 4 || !layers[1]) return null;
@@ -794,7 +797,7 @@ export function createSky(container, options = {}) {
       for (let i = 0; i < gw * gh; i++) { if (n === 0) grid[i] = px[i * 4 + 3]; later[i] = Math.max(later[i], px[i * 4 + 3]); }
     });
     gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.deleteFramebuffer(fb); gl.deleteTexture(tex);
-    const best = findCloud(grid, gw, gh, x0, y0, step, x, y, need, allowed, box);
+    const best = findCloud(grid, gw, gh, x0, y0, step, x, y, need, allowed, box, same);
     if (!best) return null;
     // where the shape will sit (placeShape clamps it the same way)
     const cx = Math.min(Math.max(best.x, allowed[0]), allowed[2]), cy = Math.min(Math.max(best.y, allowed[1]), allowed[3]);
