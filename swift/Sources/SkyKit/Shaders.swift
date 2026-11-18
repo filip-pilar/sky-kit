@@ -104,7 +104,7 @@ fragment float4 sky_cloud(VOut in [[stage_in]], constant CloudParams& P [[buffer
     float3 sky = skyAt(vv, P.sky);
     float scale = P.b.y;
     float2 seed = P.c.zw;
-    float cov = P.b.z * mix(1.0, 0.75 + 0.35 * smoothstep(0.8, 0.1, vv), P.c.y);
+    float cov = P.b.z * mix(1.0, 0.75 + 0.35 * (1.0 - smoothstep(0.1, 0.8, vv)), P.c.y);   // edges in order: reversed edges are undefined
     float2 D0 = cumulus(p, scale, seed, cov, P.b.x, P, shape);
     float alpha = smoothstep(0.0, 0.61, D0.x);
     float2 grad = float2(dfdx(D0.y), -dfdy(D0.y)) / upp;

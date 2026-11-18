@@ -140,7 +140,7 @@ void main(){
   vec2 p = uWin0 + gl_FragCoord.xy * uUpp;
   float vv = p.y / uViewH;
   vec3 sky = skyAt(vv);
-  float cov = uCov * mix(1.0, 0.75 + 0.35 * smoothstep(0.8, 0.1, vv), uFarMask);
+  float cov = uCov * mix(1.0, 0.75 + 0.35 * (1.0 - smoothstep(0.1, 0.8, vv)), uFarMask);   // edges in order: reversed edges are undefined in GLSL/Metal
   vec2 D0 = cumulus(p, uScale, uSeed, cov, uMorph);
   float alpha = smoothstep(0.0, 0.61, D0.x);
   vec2 grad = vec2(dFdx(D0.y), dFdy(D0.y)) / uUpp;
@@ -315,6 +315,7 @@ export function createSky(container, options = {}) {
   let simTime = 0, last = 0, lastDraw = 0, raf = 0;
   let needsSetup = true, needsRebuild = false, needsDraw = true;
   let userPaused = false, inView = true, destroyed = false, lost = false;
+  let framesDrawn = 0, lostCount = 0, lastGlError = 0;
   const gusts = [];               // { x, y, dx, dy, born }
   const planes = [];              // { x, y, dx, dy, age }
   let nextPlane = 8;
@@ -555,6 +556,8 @@ export function createSky(container, options = {}) {
     if (moving) { const sdt = dt * effectiveSpeed(); simTime += sdt; updatePlanes(sdt); }
     for (const L of layers) advance(L);
     composite(now);
+    framesDrawn++;
+    if (framesDrawn <= 3) { const e = gl.getError(); if (e) lastGlError = e; }   // cheap check on the first frames only
     lastDraw = now; needsDraw = false;
     if (moving || gusts.length) schedule();
   }
@@ -584,7 +587,15 @@ export function createSky(container, options = {}) {
     gl.uniform1f(u.uTrailDrift, -dir() * F.speed);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
-  function schedule() { if (!raf && !destroyed) raf = requestAnimationFrame(frame); }
+  // Some browsers hold back requestAnimationFrame for embedded (cross-origin) frames until the user
+  // interacts. A timer fallback makes sure a scheduled frame still runs.
+  let fallbackTimer = 0;
+  function schedule() {
+    if (raf || destroyed) return;
+    raf = requestAnimationFrame(frame);
+    clearTimeout(fallbackTimer);
+    fallbackTimer = setTimeout(() => { if (raf) { cancelAnimationFrame(raf); raf = 0; frame(performance.now()); } }, 200);
+  }
   function redraw(resetClock = true) { needsDraw = true; if (resetClock) last = 0; schedule(); }
 
   // ---------- observers ----------
@@ -604,17 +615,23 @@ export function createSky(container, options = {}) {
     dprQuery?.addEventListener?.('change', onDpr);
   }
   watchDpr();
-  canvas.addEventListener('webglcontextlost', e => { e.preventDefault(); lost = true; if (raf) cancelAnimationFrame(raf); raf = 0; });
+  canvas.addEventListener('webglcontextlost', e => { e.preventDefault(); lost = true; lostCount++; if (raf) cancelAnimationFrame(raf); raf = 0; });
   canvas.addEventListener('webglcontextrestored', () => { lost = false; initGL(); redraw(); });
 
   initGL();
   redraw();
+  if (container.clientWidth > 0 && container.clientHeight > 0) { needsDraw = true; frame(performance.now()); }   // first frame right away
 
   const loadImage = url => new Promise((res, rej) => { const i = new Image(); i.crossOrigin = 'anonymous'; i.onload = () => res(i); i.onerror = rej; i.src = url; });
 
   return {
     canvas,
     get options() { return { ...S }; },
+    /** Diagnostics: frames drawn, context losses, GL errors seen, canvas size. */
+    get info() {
+      return { frames: framesDrawn, contextLost: lost, contextLosses: lostCount, glError: lastGlError,
+               size: [canvas.width, canvas.height], snapshots: layers[0]?.snaps ? [cacheW, cacheH] : null };
+    },
     set(o) {
       o = cleanOptions(o);
       const resetup = RESETUP_KEYS.some(k => k in o && o[k] !== S[k]);
@@ -661,7 +678,7 @@ export function createSky(container, options = {}) {
     /** PNG data URL of the current frame (null before the first frame). */
     snapshot() { if (needsSetup || !layers[0]?.snaps) return null; composite(); return canvas.toDataURL('image/png'); },
     destroy() {
-      destroyed = true; if (raf) cancelAnimationFrame(raf);
+      destroyed = true; if (raf) cancelAnimationFrame(raf); clearTimeout(fallbackTimer);
       ro.disconnect(); io.disconnect(); document.removeEventListener('visibilitychange', onVis);
       reduceMotion?.removeEventListener?.('change', onMotionPref);
       container.removeEventListener('pointermove', onPointerMove);
