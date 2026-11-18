@@ -62,7 +62,7 @@ public final class SkyRenderer {
         var end: Double { t0 + form + hold + fade }
     }
     private struct PendingShape {
-        let mask: ShapeMask; let x, y, size, form, hold, fade, density, pause: Double
+        let mask: ShapeMask; let x, y, size, form, hold, fade, density: Double; var pause: Double
         var near: SIMD2<Double>? = nil    // form on the cloud there (the previous shape's)
         var startAt: Double? = nil        // start forming then (the previous shape's end + pause)
         var from: Shape? = nil            // turn straight from this shape (pause 0)
@@ -284,7 +284,7 @@ public final class SkyRenderer {
         updatePlanes(sdt)
         for i in layers.indices { advance(i, cb) }
         if let sh = shape {
-            if simTime > sh.holdEnd && simTime < sh.end, var n = shapeQueue.first, n.pause == 0 {
+            if simTime > sh.holdEnd && shapeMelt(at: simTime) < 0.05, var n = shapeQueue.first, n.pause == 0 {
                 // pause 0: the next shape takes over right away and this one's outline turns straight into it
                 shapeQueue.removeFirst(); n.from = sh; placeShape(n)
             } else if simTime > sh.end {
@@ -400,8 +400,21 @@ public final class SkyRenderer {
         let p = PendingShape(mask: mask, x: x, y: y, size: size, form: form, hold: hold, fade: fade, density: min(1, max(0, density)), pause: max(0, pause))
         if queue && (shape != nil || pendingShape != nil || !shapeQueue.isEmpty) { shapeQueue.append(p); return true }
         shapeQueue.removeAll()
-        if layers.count == 2 { placeShape(p) } else { pendingShape = p }
+        if layers.count == 2 { takeOver(p) } else { pendingShape = p }
         return true
+    }
+    /// A shape that isn't queued takes over from the one on screen without a jump: if that one is holding, it turns
+    /// straight into the new one now; while it is still forming or already melting, the new one comes right after it.
+    private func takeOver(_ p: PendingShape) {
+        if let sh = shape {
+            let amt = shapeAmount(at: simTime), melt = shapeMelt(at: simTime)
+            if amt > 0 && melt < 1 {
+                var n = p
+                if amt >= 1 && melt <= 0 { n.from = sh; placeShape(n) } else { n.pause = 0; shapeQueue.insert(n, at: 0) }
+                return
+            }
+        }
+        placeShape(p)
     }
     public func clearShape() { shape = nil; pendingShape = nil; shapeQueue.removeAll() }
 

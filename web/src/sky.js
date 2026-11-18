@@ -146,10 +146,19 @@ float srcAt(vec2 p){   // (sharp inside, fading out at a distance from the shape
 // middle, so it shades round, from body) and cauliflower lumps that shape the outline
 float shapeFill(float R, float body, float t, float thr, float v, float bil, float lumps, float big, float small){
   if (R <= 0.001) return thr - 0.3;
-  float fill = thr + (R - 0.5) * mix(0.5, 0.45, t) + ((body - 0.5) * 0.3 + lumps * 0.3 + 0.05) * t
-             + big * mix(0.3, 0.15, t) + small * mix(0.15, 0.05, t) + (bil - 0.35) * 0.2;
-  fill += clamp(v - thr, -0.3, 0.3) * 0.25 + (uShapeDensity - 0.5) * mix(0.2, 0.35, step(0.5, uShapeDensity));   // thicker where the cloud is thick; overall density
-  return mix(thr - 0.3, fill, smoothstep(0.0, 0.1, R));
+  // how far above the cloud threshold: the outline, then (solid shapes) a low dome broken up inside into lumps
+  // and see-through gaps like a real cloud's (the outline itself stays readable), fine detail, and (mostly for
+  // text) thicker where the sky's own cloud is thick
+  float inner = smoothstep(0.55, 0.95, R) * t;
+  float edge = (R - 0.5) * mix(0.5, 0.45, t);
+  float rest = ((body - 0.5) * 0.2 + 0.03) * t + (lumps * 0.5 - 0.08) * inner
+             + big * (mix(0.3, 0.15, t) + 0.15 * inner) + small * mix(0.15, 0.1, t) + (bil - 0.35) * 0.2
+             + clamp(v - thr, -0.3, 0.3) * mix(0.25, 0.1, t);
+  // density: low = wispy and see-through (the outline fades less than the inside), high = solid
+  float d = uShapeDensity, lo = d * 2.0, hi = d * 2.0 - 1.0;
+  float ex = edge * (d < 0.5 ? mix(0.6, 1.0, lo) : mix(1.0, 1.3, hi)) + rest * (d < 0.5 ? mix(0.35, 1.0, lo) : mix(1.0, 1.5, hi))
+           + (d - 0.5) * 0.06;
+  return mix(thr - 0.3, thr + ex, smoothstep(0.0, 0.1, R));
 }
 // v: the near clouds' density here; p: position. The shape sits on a real cloud and that cloud reshapes
 // into it, puff by puff. Melting runs it back, so the shape turns into the same cloud again, which stays
@@ -176,7 +185,7 @@ float withShape(float v, vec2 p, float thr, float bil, vec2 so, bool lite, out f
   float R = 0.0, fill = thr - 0.3;
   shR = mix(mp.x, m.x, K);
   if (m.y > 0.0 || mp.y > 0.0){
-    vec2 wob = lite ? vec2(0.0) : vec2(fbm(p * 6.5 + vec2(2.3, 8.9), 2), fbm(p * 6.5 + vec2(7.7, 1.3), 2)) * mix(0.025, 0.06, t);
+    vec2 wob = lite ? vec2(0.0) : vec2(fbm(p * 6.5 + vec2(2.3, 8.9), 2), fbm(p * 6.5 + vec2(7.7, 1.3), 2)) * mix(0.025, 0.035, t);
     vec4 ms = shapeAt(p + wob), mps = K < 1.0 ? prevAt(p + wob) : vec4(0.0);
     R = mix(mps.x, ms.x, K);
     if (R > 0.001){
@@ -207,7 +216,7 @@ vec4 cumulus(vec2 p, vec2 pg, vec2 so, float scale, vec2 seed, float cov, float 
   float rim = own * (1.0 - 0.6 * smoothstep(0.35, 0.8, shR)) * mix(0.6, 1.0, uShapeThick) * (uPrev2.x > 0.0 ? 1.0 : smoothstep(0.0, 0.5, uShapeAmt)) * (1.0 - smoothstep(0.2, 0.6, uShapeMelt));
   float D = smoothstep(thr, thr + 0.22 + 0.55 * rim, v);
   float dome = smoothstep(thr, thr + 0.7, v);
-  float inShape = shR * own;                                         // softer fine texture inside a shape
+  float inShape = shR * own * (1.0 - uShapeThick);                   // softer fine texture inside thin shapes (text)
   return vec4(D, (0.05 * dome + 0.012 * D * bil * (1.0 - 0.5 * inShape)) * scale, own, shR);
 }
 float cumulusLite(vec2 p, vec2 pg, vec2 so, float scale, vec2 seed, float cov, float morph){
@@ -241,8 +250,8 @@ void main(){
   for (int i = 1; i <= 4; i++){ vec2 ps = p + L2 * 0.028 * float(i) * uScale; occ += cumulusLite(ps, ps + dg, so, uScale, uSeed, cov, uMorph); }
   c = mix(c, SHADE, smoothstep(0.35, 0.95, occ / 4.0) * uShadow);
   c = mix(c, SHADE, smoothstep(0.45, 1.0, D0.x) * 0.2 * uShadow * (1.0 - s));
-  // a shape is thin, so it barely shades itself: give its body the tone a big cloud's body has
-  if (uShapeAmt > 0.0) c = mix(c, SHADE, D0.w * D0.z * 0.7 * uShadow);
+  // a thin shape barely shades itself: give its body the tone a big cloud's body has (a solid one shades itself, so less)
+  if (uShapeAmt > 0.0) c = mix(c, SHADE, D0.w * D0.z * mix(0.7, 0.25, uShapeThick) * uShadow);
   float edge = 1.0 - smoothstep(0.0, 0.3, D0.x);
   float facing = clamp(dot(normalize(n.xy + 1e-5), L2), 0.0, 1.0);
   c += RIM * edge * facing * 0.45;
@@ -299,7 +308,8 @@ float contrails(vec2 p, out float planeDot){
     float wdt = 0.0022 + ta * 0.0016;
     float sep = 0.0028 * exp(-ta * 0.35);                       // two engine trails that merge
     float u1 = (across - sep) / wdt, u2 = (across + sep) / wdt;
-    float life = exp(-ta / uTrailLife) * smoothstep(0.0, 0.8, ta) / (1.0 + ta * 0.06);
+    float life = exp(-ta / uTrailLife) * smoothstep(0.0, 0.8, ta) / (1.0 + ta * 0.06)
+               * smoothstep(0.0, 0.05 + wdt * 6.0, along);                   // the trail fades in from where the plane started (no straight cut once it has spread)
     tr = max(tr, 0.5 * (exp(-u1 * u1) + exp(-u2 * u2)) * life);
   }
   return tr;
@@ -920,7 +930,7 @@ export function createSky(container, options = {}) {
     if (!shape) return;
     const holdEnd = shape.t0 + shape.form + shape.hold, meltEnd = holdEnd + shape.fade;
     const next = shapeQueue[0];
-    if (simTime > holdEnd && simTime < meltEnd && next?.img && next.o.pause === 0 && !leadBuilding) {
+    if (simTime > holdEnd && shapeMelt(simTime) < 0.05 && next?.img && next.o.pause === 0 && !leadBuilding) {
       // pause 0: the next shape takes over right away and this one's outline turns straight into it
       shapeQueue.shift();
       placeShape(next.img, { ...next.o, _from: shape });
@@ -932,6 +942,14 @@ export function createSky(container, options = {}) {
       if (!shape) return;
     }
     if (paint) paintPatch();
+  }
+  // a shape that isn't queued takes over from the one on screen without a jump: if that one is holding, it turns
+  // straight into the new one now; while it is still forming or already melting, the new one comes right after it
+  function takeOver(img, o) {
+    const amt = shape ? shapeAmt(simTime) : 0, melt = shape ? shapeMelt(simTime) : 1;
+    if (!shape || amt <= 0 || melt >= 1) placeShape(img, o);
+    else if (amt >= 1 && melt <= 0) placeShape(img, { ...o, _from: shape });
+    else { shapeQueue.unshift({ img, o: { ...o, pause: 0 } }); placeNext(); }
   }
   function placeNext() {
     if (shape || leadBuilding || !shapeQueue.length || !shapeQueue[0].img) return;
@@ -1024,7 +1042,7 @@ export function createSky(container, options = {}) {
       let img;
       try { img = await buildShapeImage(src); } finally { if (!slot) leadBuilding--; }
       if (ticket !== shapeTicket || destroyed || !layers[0]?.snaps) return;
-      if (slot) { slot.img = img; placeNext(); } else { placeShape(img, o); placeNext(); }
+      if (slot) { slot.img = img; placeNext(); } else { takeOver(img, o); placeNext(); }
     },
     clearShape() { shapeTicket++; shapeQueue = []; freeShape(); },
     /** Testing aid: fast-forward sky time as if `seconds` passed at 30 fps, then draw. */

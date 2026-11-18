@@ -108,10 +108,19 @@ static float2 gatherFrom(float2 p, constant CloudParams& P, texture2d<float> sha
 // middle, so it shades round, from body) and cauliflower lumps that shape the outline
 static float shapeFill(float R, float body, float t, float thr, float v, float bil, float lumps, float big, float small, float density) {
     if (R <= 0.001) return thr - 0.3;
-    float fill = thr + (R - 0.5) * mix(0.5, 0.45, t) + ((body - 0.5) * 0.3 + lumps * 0.3 + 0.05) * t
-               + big * mix(0.3, 0.15, t) + small * mix(0.15, 0.05, t) + (bil - 0.35) * 0.2;
-    fill += clamp(v - thr, -0.3, 0.3) * 0.25 + (density - 0.5) * mix(0.2, 0.35, step(0.5, density));   // thicker where the cloud is thick; overall density
-    return mix(thr - 0.3, fill, smoothstep(0.0, 0.1, R));
+    // how far above the cloud threshold: the outline, then (solid shapes) a low dome broken up inside into lumps
+    // and see-through gaps like a real cloud's (the outline itself stays readable), fine detail, and (mostly for
+    // text) thicker where the sky's own cloud is thick
+    float inner = smoothstep(0.55, 0.95, R) * t;
+    float edge = (R - 0.5) * mix(0.5, 0.45, t);
+    float rest = ((body - 0.5) * 0.2 + 0.03) * t + (lumps * 0.5 - 0.08) * inner
+               + big * (mix(0.3, 0.15, t) + 0.15 * inner) + small * mix(0.15, 0.1, t) + (bil - 0.35) * 0.2
+               + clamp(v - thr, -0.3, 0.3) * mix(0.25, 0.1, t);
+    // density: low = wispy and see-through (the outline fades less than the inside), high = solid
+    float lo = density * 2.0, hi = density * 2.0 - 1.0;
+    float ex = edge * (density < 0.5 ? mix(0.6, 1.0, lo) : mix(1.0, 1.3, hi)) + rest * (density < 0.5 ? mix(0.35, 1.0, lo) : mix(1.0, 1.5, hi))
+             + (density - 0.5) * 0.06;
+    return mix(thr - 0.3, thr + ex, smoothstep(0.0, 0.1, R));
 }
 // v: the near clouds' density here; p: position. The shape sits on a real cloud and that cloud reshapes
 // into it, puff by puff. Melting runs it back, so the shape turns into the same cloud again, which stays
@@ -139,7 +148,7 @@ static float withShape(float v, float2 p, float thr, float bil, float2 so, bool 
     float R = 0.0, fill = thr - 0.3;
     shR = mix(mp.x, m.x, K);
     if (m.y > 0.0 || mp.y > 0.0) {
-      float2 wob = lite ? float2(0.0) : float2(fbm(p * 6.5 + float2(2.3, 8.9), 2), fbm(p * 6.5 + float2(7.7, 1.3), 2)) * mix(0.025, 0.06, t);
+      float2 wob = lite ? float2(0.0) : float2(fbm(p * 6.5 + float2(2.3, 8.9), 2), fbm(p * 6.5 + float2(7.7, 1.3), 2)) * mix(0.025, 0.035, t);
       float4 ms = shapeAt(p + wob, P, shape), mps = K < 1.0 ? prevAt(p + wob, P, prev) : float4(0.0);
       R = mix(mps.x, ms.x, K);
       if (R > 0.001) {
@@ -170,7 +179,7 @@ static float4 cumulus(float2 p, float2 pg, float2 so, float scale, float2 seed, 
     float rim = own * (1.0 - 0.6 * smoothstep(0.35, 0.8, shR)) * mix(0.6, 1.0, P.d.w) * (P.e.y > 0.0 ? 1.0 : smoothstep(0.0, 0.5, P.d.y)) * (1.0 - smoothstep(0.2, 0.6, P.d.z));
     float D = smoothstep(thr, thr + 0.22 + 0.55 * rim, v);
     float dome = smoothstep(thr, thr + 0.7, v);
-    float inShape = shR * own;                                        // softer fine texture inside a shape
+    float inShape = shR * own * (1.0 - P.d.w);                        // softer fine texture inside thin shapes (text)
     return float4(D, (0.05 * dome + 0.012 * D * bil * (1.0 - 0.5 * inShape)) * scale, own, shR);
 }
 static float cumulusLite(float2 p, float2 pg, float2 so, float scale, float2 seed, float cov, float morph, constant CloudParams& P, texture2d<float> shape, texture2d<float> srcMap, texture2d<float> prev) {
@@ -212,8 +221,8 @@ fragment float4 sky_cloud(VOut in [[stage_in]], constant CloudParams& P [[buffer
     for (int i = 1; i <= 4; i++) { float2 ps = p + L2 * 0.028 * float(i) * scale; occ += cumulusLite(ps, ps + dg, so, scale, seed, cov, P.b.x, P, shape, srcMap, prev); }
     c = mix(c, SHADE, smoothstep(0.35, 0.95, occ / 4.0) * P.b.w);
     c = mix(c, SHADE, smoothstep(0.45, 1.0, D0.x) * 0.2 * P.b.w * (1.0 - s));
-    // a shape is thin, so it barely shades itself: give its body the tone a big cloud's body has
-    if (P.d.y > 0.0) c = mix(c, SHADE, D0.w * D0.z * 0.7 * P.b.w);
+    // a thin shape barely shades itself: give its body the tone a big cloud's body has (a solid one shades itself, so less)
+    if (P.d.y > 0.0) c = mix(c, SHADE, D0.w * D0.z * mix(0.7, 0.25, P.d.w) * P.b.w);
     float edge = 1.0 - smoothstep(0.0, 0.3, D0.x);
     float facing = clamp(dot(normalize(n.xy + 1e-5), L2), 0.0, 1.0);
     c += RIM * edge * facing * 0.45;
@@ -257,7 +266,8 @@ static float contrails(float2 p, constant ExtraParams& E, thread float& planeDot
         float wdt = 0.0022 + ta * 0.0016;
         float sep = 0.0028 * exp(-ta * 0.35);
         float u1 = (across - sep) / wdt, u2 = (across + sep) / wdt;
-        float fade = exp(-ta / life) * smoothstep(0.0, 0.8, ta) / (1.0 + ta * 0.06);
+        float fade = exp(-ta / life) * smoothstep(0.0, 0.8, ta) / (1.0 + ta * 0.06)
+                   * smoothstep(0.0, 0.05 + wdt * 6.0, along);              // the trail fades in from where the plane started (no straight cut once it has spread)
         tr = max(tr, 0.5 * (exp(-u1 * u1) + exp(-u2 * u2)) * fade);
     }
     return tr;

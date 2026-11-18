@@ -64,7 +64,7 @@ Props are the options below; changing a prop updates the sky live, and removing 
 
 Methods: `set(options)`, `pause()`, `play()`, `flyPlane({ from, to }?)`, `showShape({ text | image, x, y, size, form, hold, fade, density, queue, pause })`, `clearShape()`, `snapshot()` (PNG data URL), `destroy()`.
 
-`showShape` accepts text/emoji or an image (URL, `<img>`, canvas): transparent images use their alpha, opaque ones use dark = shape. It is put on a real cloud near `x, y`, which reshapes into it over `form` seconds (default 5); it holds (5); then it reshapes back into that cloud (7), which stays. `density` (0–1, default 0.5 = like the clouds around) makes the finished shape wispier or more solid. `queue: true` waits for the current shape to melt and then forms on the same cloud (when it is still there), so `showShape({ text: 'one' })` followed by `showShape({ text: 'two', queue: true })` gives word, cloud, next word, cloud. `pause` (seconds, default 1) is how long the cloud shows in between; with `pause: 0` the first word turns straight into the next once it has held, letter shapes blending puff by puff (over the next word's `form` seconds), first where the old word is and then outward, so a longer word grows out of a shorter one.
+`showShape` accepts text/emoji or an image (URL, `<img>`, canvas): transparent images use their alpha, opaque ones use dark = shape. It is put on a real cloud near `x, y`, which reshapes into it over `form` seconds (default 5); it holds (5); then it reshapes back into that cloud (7), which stays. `density` (0–1, default 0.5 = like the clouds around): low makes the finished shape wispy and see-through, high makes it solid. Calling `showShape` while a shape is showing takes over without a jump: if that shape is holding, it turns straight into the new one; while it is still forming or already melting, the new one comes right after it. Bold line icons form like letters and read best; filled images become solid clouds, so keep their features chunky (fine details blur away, as in real clouds). `queue: true` waits for the current shape to melt and then forms on the same cloud (when it is still there), so `showShape({ text: 'one' })` followed by `showShape({ text: 'two', queue: true })` gives word, cloud, next word, cloud. `pause` (seconds, default 1) is how long the cloud shows in between; with `pause: 0` the first word turns straight into the next once it has held, letter shapes blending puff by puff (over the next word's `form` seconds), first where the old word is and then outward, so a longer word grows out of a shorter one.
 
 ### Examples
 
@@ -120,7 +120,7 @@ Shapes: `sky-render --seconds 4.5 --heart --out out/swift-heart-4.5.png` and `pa
 
 - WebGL2 is required on the web (all current browsers have it).
 - Shapes form as the sky moves; with `speed: 0` they don't appear.
-- One shape at a time; a new one replaces the previous, unless it is queued (`queue: true`).
+- One shape at a time; a new one takes over from the previous (see above), or waits for it with `queue: true`.
 - Noise coordinates keep growing with sky time. After several days of continuous running at speed 1 the cloud shading could start to get grainy (float precision). Not a concern for normal sessions.
 
 ## Layout
