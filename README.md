@@ -7,7 +7,7 @@ Endless drifting painterly clouds on a bright blue sky — for the web (WebGL2, 
 - Fills whatever container you put it in, at full device resolution.
 - Cheap: about 2 ms per frame at 2880×1800 on an M4 (clouds are painted into snapshots that slide, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)).
 - Pauses when off-screen or when the tab is hidden; holds still for reduced-motion users.
-- Extras (web and Swift): planes with contrails; text, emoji or SVG/PNG shapes that the clouds around gather into, and that later break up into small clouds that rejoin the sky.
+- Extras (web and Swift): planes with contrails; text, emoji or SVG/PNG shapes: a real cloud near the spot reshapes into the shape, then back into itself.
 
 ## Web
 
@@ -64,7 +64,7 @@ Props are the options below; changing a prop updates the sky live, and removing 
 
 Methods: `set(options)`, `pause()`, `play()`, `flyPlane({ from, to }?)`, `showShape({ text | image, x, y, size, form, hold, fade })`, `clearShape()`, `snapshot()` (PNG data URL), `destroy()`.
 
-`showShape` accepts text/emoji or an image (URL, `<img>`, canvas): transparent images use their alpha, opaque ones use dark = shape. The clouds around it drift in and give it some of themselves over `form` seconds (default 5), so the sky stays cloudy; it holds (5); then it breaks into small pieces that shrink away while the clouds around come back (7). It drifts with the clouds and is placed so it sits at `x, y` in the middle of its hold; it shrinks to fit 70% of the view width on narrow screens. Shapes form as the sky moves, so they need `speed > 0`.
+`showShape` accepts text/emoji or an image (URL, `<img>`, canvas): transparent images use their alpha, opaque ones use dark = shape. It is put on a real cloud near `x, y`, which reshapes into it over `form` seconds (default 5); it holds (5); then it reshapes back into that cloud (7), which stays.
 
 ### Examples
 

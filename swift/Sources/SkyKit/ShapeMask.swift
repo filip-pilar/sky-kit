@@ -29,6 +29,8 @@ struct ShapeMask {
     let thickness: Double
     /// Margin around the silhouette, in mask pixels (room for the wide area).
     let pad: Int
+    /// The silhouette's area in mask pixels.
+    let silhouetteArea: Double
 
     /// Built at 100 px per silhouette height (it is heavily blurred anyway; the radii below are for 220 px,
     /// scaled by `ms`), like sky.js.
@@ -62,7 +64,8 @@ struct ShapeMask {
                 rgba[i * 4 + 3] = UInt8((255 * min(1, 1.2 * (far[i] / farMax).squareRoot()) * wy * win(min(x, w - 1 - x))).rounded())
             }
         }
-        return ShapeMask(width: w, height: h, rgba: rgba, silhouetteHeight: sh, silhouetteWidth: sw, thickness: thick, pad: pad)
+        return ShapeMask(width: w, height: h, rgba: rgba, silhouetteHeight: sh, silhouetteWidth: sw, thickness: thick, pad: pad,
+                         silhouetteArea: Double(sil.reduce(0, +)) / 255)
     }
 
     /// Alpha 0…255, top-down rows.
