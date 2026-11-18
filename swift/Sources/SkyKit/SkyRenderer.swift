@@ -47,16 +47,12 @@ public final class SkyRenderer {
     /// A shape and its live patch: the near clouds over the shape's area, rendered every drawn frame.
     private final class Shape {
         let texture: MTLTexture; let rect: SIMD4<Double>; let t0, form, hold, fade: Double
-        let thickness: Double, blend: Double   // blend: width of the patch's blend border
-        var area = SIMD4<Double>(0, 0, 1, 1)    // where the shape may take clouds from (x0, y0, width, height): the view over its lifetime, and more
-        var region = SIMD4<Double>(0, 0, 1, 1)  // what the live patch covers: the shape and the picked clouds' homes, paths and targets
-        var copies: [ShapePlan.Copy] = []       // the nearby clouds it is made from
+        let thickness: Double, blend: Double   // blend: width of the patch's blend border (inside the mask's all-zero margin)
         var patch: MTLTexture?; var patchView = SIMD4<Double>(0, 0, 1, 1); var patchUV = SIMD2<Double>(1, 1); var patchReady = false
         init(texture: MTLTexture, rect: SIMD4<Double>, t0: Double, form: Double, hold: Double, fade: Double, thickness: Double, blend: Double) {
             self.texture = texture; self.rect = rect; self.t0 = t0; self.form = form; self.hold = hold; self.fade = fade
             self.thickness = thickness; self.blend = blend
         }
-        var active: (Double) -> Bool { { t in t > self.t0 && t < self.t0 + self.form + self.hold + self.fade } }
         var end: Double { t0 + form + hold + fade + 0.5 }
     }
     private struct PendingShape { let mask: ShapeMask; let x, y, size, form, hold, fade: Double }
@@ -67,14 +63,7 @@ public final class SkyRenderer {
 
     // GPU parameter blocks (all float4, so Swift and Metal layouts match)
     private struct GPUColors { var top: SIMD4<Float>, mid: SIMD4<Float>, low: SIMD4<Float> }
-    private typealias Four = (SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>)
-    private struct CloudParams {
-        var a, b, c, d, shapeRect: SIMD4<Float>; var sky: GPUColors
-        var copyBox: Four = (.zero, .zero, .zero, .zero), copyMove: Four = (.zero, .zero, .zero, .zero), copyTarget: Four = (.zero, .zero, .zero, .zero)
-        var shapeExtra = SIMD4<Float>.zero
-    }
-    /// Testing aid: hold every picked cloud at (travel, morph) instead of animating them.
-    public static var debugParkCopies: SIMD2<Double>? = nil
+    private struct CloudParams { var a, b, c, d, shapeRect: SIMD4<Float>; var sky: GPUColors }
     private struct CompositeParams { var a, far, near, patch, patch2, mask, shapeAM: SIMD4<Float>; var sky: GPUColors }
 
     public init(device: MTLDevice? = MTLCreateSystemDefaultDevice(), options: SkyOptions = SkyOptions()) throws {
@@ -167,51 +156,28 @@ public final class SkyRenderer {
         let gradient = Float(min(1, max(0, options.gradient)))
         return GPUColors(top: SIMD4(c.top, gradient), mid: SIMD4(c.mid, 0), low: SIMD4(c.low, 0))
     }
-    private static func smooth(_ x: Double) -> Double { let v = min(max(x, 0), 1); return v * v * (3 - 2 * v) }
-    /// How far picked cloud `c` has travelled (0 = home, 1 = at its part of the shape) and turned into the
-    /// shape (0…1) at time t. Forming: it travels over the first half of the forming time and turns into the
-    /// shape over the last 60%, overlapping (closest clouds first); melting runs backwards, overlapping, so
-    /// no cloud waits.
-    private static func copyState(_ sh: Shape, _ rank: Int, _ t: Double) -> (move: Double, morph: Double) {
-        if let park = debugParkCopies { return (park.x, park.y) }
-        let a = t - sh.t0, F = sh.form, G = sh.fade
-        if a < F + sh.hold {
-            let d = 0.05 * F * Double(rank)
-            return (smooth((a - d) / (0.5 * F)), smooth((a - d - 0.32 * F) / (0.6 * F)))
-        }
-        let b = a - F - sh.hold, d = 0.05 * G * Double(rank)
-        return (1 - smooth((b - d - 0.4 * G) / (0.45 * G)), 1 - smooth((b - d) / (0.5 * G)))
+    private static func ease(_ x: Double) -> Double {   // gentle ends, but no long dead start
+        let v = min(max(x, 0), 1); return 0.5 * v + 0.5 * v * v * (3 - 2 * v)
     }
-    /// How far the shape has formed when no cloud was near enough to pick.
-    private static func soloMorph(_ sh: Shape, _ t: Double) -> Double {
-        if let park = debugParkCopies { return park.y }
-        let a = t - sh.t0
-        return a < sh.form + sh.hold ? smooth(a / sh.form) : 1 - smooth((a - sh.form - sh.hold) / (0.5 * sh.fade))
+    /// Forming progress (stays 1 while holding and melting).
+    private func shapeAmount(at t: Double) -> Double {
+        guard let s = shape, t > s.t0 else { return 0 }
+        return Self.ease((t - s.t0) / s.form)
     }
-    private func cloudParams(_ def: LayerDef, x0: Double, y0: Double, time: Double, targetHeight: Int,
-                             upp: Double? = nil, withShape: Bool = false) -> CloudParams {
+    /// Melting progress.
+    private func shapeMelt(at t: Double) -> Double {
+        guard let s = shape else { return 0 }
+        return Self.ease((t - s.t0 - s.form - s.hold) / s.fade)
+    }
+    private func cloudParams(_ def: LayerDef, x0: Double, y0: Double, time: Double, targetHeight: Int, amount: Double, melt: Double = 0) -> CloudParams {
         let seed = def.seed + SIMD2(options.seed * 7.31, options.seed * 3.17)
-        var p = CloudParams(
-            a: SIMD4(Float(x0), Float(y0), Float(upp ?? viewH / Double(cacheH)), Float(viewH)),
+        return CloudParams(
+            a: SIMD4(Float(x0), Float(y0), Float(viewH / Double(cacheH)), Float(viewH)),
             b: SIMD4(Float(time * def.morph), Float(def.scale), Float(options.coverage), Float(options.shadow)),
             c: SIMD4(Float(def.haze), Float(def.farMask), Float(seed.x), Float(seed.y)),
-            d: SIMD4(Float(targetHeight), withShape ? 1 : 0, 0, Float(shape?.thickness ?? 0)),
+            d: SIMD4(Float(targetHeight), Float(amount), Float(melt), Float(shape?.thickness ?? 0)),
             shapeRect: SIMD4<Float>(shape?.rect ?? SIMD4(0, 0, 1, 1)),
             sky: gpuColors())
-        guard withShape, let sh = shape else { return p }
-        var box = [SIMD4<Float>](repeating: .zero, count: 4), move = box, target = box
-        for (k, c) in sh.copies.prefix(4).enumerated() {
-            let st = Self.copyState(sh, c.rank, time)
-            let off = (c.target - c.centre) * st.move
-            box[k] = SIMD4<Float>(c.box)
-            move[k] = SIMD4(Float(off.x), Float(off.y), Float(st.morph), Float(st.move))
-            let now = c.centre + off
-            target[k] = SIMD4(Float(now.x), Float(now.y), Float(c.reach), Float(c.radius))
-        }
-        p.copyBox = (box[0], box[1], box[2], box[3]); p.copyMove = (move[0], move[1], move[2], move[3])
-        p.copyTarget = (target[0], target[1], target[2], target[3])
-        p.shapeExtra = SIMD4(Float(min(4, sh.copies.count)), Float(Self.soloMorph(sh, time)), 0, 0)
-        return p
     }
     private func paint(_ def: LayerDef, _ s: Snap, strip: Int, _ cb: MTLCommandBuffer) {
         let rp = MTLRenderPassDescriptor()
@@ -224,7 +190,7 @@ public final class SkyRenderer {
             let x = cacheW * strip / def.strips, x2 = cacheW * (strip + 1) / def.strips
             enc.setScissorRect(MTLScissorRect(x: x, y: 0, width: max(1, x2 - x), height: cacheH))
         }
-        var p = cloudParams(def, x0: s.x0, y0: 0, time: s.time, targetHeight: cacheH)
+        var p = cloudParams(def, x0: s.x0, y0: 0, time: s.time, targetHeight: cacheH, amount: 0)
         enc.setFragmentBytes(&p, length: MemoryLayout<CloudParams>.stride, index: 0)
         enc.setFragmentTexture(emptyTexture, index: 0)
         enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
@@ -235,8 +201,9 @@ public final class SkyRenderer {
     private func paintPatch(_ cb: MTLCommandBuffer) {
         guard let sh = shape else { return }
         sh.patchReady = false
-        guard sh.active(simTime), layers.count == 2 else { return }
-        let upp = viewH / Double(cacheH), r = sh.region, fade = sh.blend
+        let amt = shapeAmount(at: simTime), melt = shapeMelt(at: simTime)
+        guard amt > 0, melt < 1, layers.count == 2 else { return }
+        let upp = viewH / Double(cacheH), r = sh.rect, fade = sh.blend
         let scroll = dir * layers[1].def.speed * simTime, vw = Double(width) / unit
         let x0 = max(r.x, scroll - fade), x1 = min(r.x + r.z, scroll + vw + fade)
         let y0 = max(r.y, -fade), y1 = min(r.y + r.w, viewH + fade)
@@ -260,7 +227,7 @@ public final class SkyRenderer {
         // Metal's viewport origin is the top-left: draw into the top-left w×h of the texture; the shader's
         // y flip uses the texture height, so pass that and start the window at the bottom of the texture
         enc.setViewport(MTLViewport(originX: 0, originY: 0, width: Double(w), height: Double(h), znear: 0, zfar: 1))
-        var p = cloudParams(layers[1].def, x0: x0, y0: y0, time: simTime, targetHeight: h, withShape: true)
+        var p = cloudParams(layers[1].def, x0: x0, y0: y0, time: simTime, targetHeight: h, amount: amt, melt: melt)
         enc.setFragmentBytes(&p, length: MemoryLayout<CloudParams>.stride, index: 0)
         enc.setFragmentTexture(sh.texture, index: 0)
         enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
@@ -323,9 +290,17 @@ public final class SkyRenderer {
         var patch = SIMD4<Float>(0, 0, 1, 1), patch2 = SIMD4<Float>(0, 0, 0, 0)
         if let sh = shape, sh.patchReady {
             patch = SIMD4<Float>(sh.patchView)
-            patch2 = SIMD4(1, Float(sh.blend), Float(sh.patchUV.x), Float(sh.patchUV.y))   // its border is out of view
+            patch2 = SIMD4(1, Float(sh.blend), Float(sh.patchUV.x), Float(sh.patchUV.y))   // blend inside the mask's all-zero margin
         }
-        let mask = SIMD4<Float>(0, 0, 1, 1), shapeAM = SIMD4<Float>(0, 0, 0, 0)   // (unused by the composite now)
+        var mask = SIMD4<Float>(0, 0, 1, 1), shapeAM = SIMD4<Float>(0, 0, 0, 0)
+        if let sh = shape {
+            let a = shapeAmount(at: simTime), mt = shapeMelt(at: simTime)
+            if a > 0, mt < 1 {
+                let scroll = dir * layers[1].def.speed * simTime   // subtracted in double precision
+                mask = SIMD4(Float(sh.rect.x - scroll), Float(sh.rect.y), Float(sh.rect.z), Float(sh.rect.w))
+                shapeAM = SIMD4(Float(a), Float(mt), Float(sh.thickness), 0)
+            }
+        }
         var p = CompositeParams(
             a: SIMD4(Float(width), Float(height), Float(unit), Float(viewH)),
             far: win(layers[0]), near: win(layers[1]), patch: patch, patch2: patch2, mask: mask, shapeAM: shapeAM,
@@ -336,7 +311,7 @@ public final class SkyRenderer {
         enc.setFragmentTexture(layers[0].snaps[0].tex, index: 0); enc.setFragmentTexture(layers[0].snaps[1].tex, index: 1)
         enc.setFragmentTexture(layers[1].snaps[0].tex, index: 2); enc.setFragmentTexture(layers[1].snaps[1].tex, index: 3)
         enc.setFragmentTexture(shape?.patchReady == true ? shape?.patch : emptyTexture, index: 4)
-        enc.setFragmentTexture(emptyTexture, index: 5)
+        enc.setFragmentTexture(shapeAM.x > 0 ? shape?.texture : emptyTexture, index: 5)
         enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
         enc.endEncoding()
     }
@@ -415,79 +390,9 @@ public final class SkyRenderer {
         let wUnits = hUnits * Double(p.mask.width) / Double(p.mask.height)
         // the shape drifts with the clouds: place it so it is at (x, y) halfway through its hold
         let cx = p.x * vw + dir * near.def.speed * (t0 + p.form + p.hold / 2), cy = p.y * viewH
-        let sh = Shape(texture: tex, rect: SIMD4(cx - wUnits / 2, cy - hUnits / 2, wUnits, hUnits),
-                       t0: t0, form: p.form, hold: p.hold, fade: p.fade, thickness: p.mask.thickness,
-                       blend: 0.1)
-        // the silhouette's box and area in cloud units, then the nearby clouds it will be made from
-        let k = hUnits / Double(p.mask.height), pad = Double(p.mask.pad) * k
-        let sil = SIMD4(sh.rect.x + pad, sh.rect.y + pad, sh.rect.x + pad + Double(p.mask.silhouetteWidth) * k, sh.rect.y + pad + Double(p.mask.silhouetteHeight) * k)
-        // the area the shape may change: the view at the start and the end of its life, plus a margin (the
-        // patch's blend border stays out of view, and the clouds near the view's edges are whole inside it)
-        let tEnd = t0 + p.form + p.hold + p.fade, s0 = dir * near.def.speed * t0, s1 = dir * near.def.speed * tEnd
-        sh.area = SIMD4(min(s0, s1) - 0.8, -0.8, abs(s1 - s0) + vw + 1.6, viewH + 1.6)
-        sh.copies = pickClouds(sil: sil, silH: silH, need: 1.1 * p.mask.silhouetteArea * k * k, rect: sh.area, blend: sh.blend,
-                               times: [t0, t0 + p.form + p.hold / 2, t0 + p.form + p.hold + p.fade])
-        // the live patch only needs to cover what changes: the shape and each picked cloud's home, path and
-        // target (plus the blend border, where the patch already equals the ordinary sky)
-        var lo = SIMD2(sh.rect.x, sh.rect.y), hi = SIMD2(sh.rect.x + sh.rect.z, sh.rect.y + sh.rect.w)
-        for c in sh.copies {
-            let h = SIMD2(abs(c.box.z) + ShapePlan.margin, c.box.w + ShapePlan.margin), off = c.target - c.centre
-            for at in [SIMD2(c.box.x, c.box.y), SIMD2(c.box.x, c.box.y) + off] { lo = simd_min(lo, at - h); hi = simd_max(hi, at + h) }
-        }
-        let e = sh.blend + 0.02
-        sh.region = SIMD4(lo.x - e, lo.y - e, hi.x - lo.x + 2 * e, hi.y - lo.y + 2 * e)
-        shape = sh
-    }
-
-    /// Renders a low-resolution map of the near clouds around the shape (the most opaque each cell gets at
-    /// `times`) and picks the clouds the shape is made from (ShapePlan).
-    private func pickClouds(sil: SIMD4<Double>, silH: Double, need: Double, rect: SIMD4<Double>, blend: Double, times: [Double]) -> [ShapePlan.Copy] {
-        // the map covers all of the shape's area that the live patch can change (picked clouds and their
-        // margins must stay inside it); ShapePlan only picks clouds within reach of the shape
-        let step = ShapePlan.step, keep = blend + ShapePlan.margin + step
-        let x0 = rect.x + keep, y0 = rect.y + keep, x1 = rect.x + rect.z - keep, y1 = rect.y + rect.w - keep
-        let gw = Int((x1 - x0) / step), gh = Int((y1 - y0) / step)
-        guard gw > 4, gh > 4, layers.count == 2,
-              let buf = device.makeBuffer(length: gw * gh * 4 * times.count, options: .storageModeShared),
-              let cb = queue.makeCommandBuffer() else { return [] }
-        let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: gw, height: gh, mipmapped: false)
-        d.usage = [.renderTarget]; d.storageMode = .private
-        for (i, t) in times.enumerated() {
-            guard let tex = device.makeTexture(descriptor: d) else { return [] }
-            let rp = MTLRenderPassDescriptor()
-            rp.colorAttachments[0].texture = tex; rp.colorAttachments[0].loadAction = .dontCare; rp.colorAttachments[0].storeAction = .store
-            guard let enc = cb.makeRenderCommandEncoder(descriptor: rp) else { return [] }
-            enc.setRenderPipelineState(cloudPipeline)
-            var p = cloudParams(layers[1].def, x0: x0, y0: y0, time: t, targetHeight: gh, upp: step)
-            enc.setFragmentBytes(&p, length: MemoryLayout<CloudParams>.stride, index: 0)
-            enc.setFragmentTexture(emptyTexture, index: 0)
-            enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
-            enc.endEncoding()
-            guard let blit = cb.makeBlitCommandEncoder() else { return [] }
-            blit.copy(from: tex, sourceSlice: 0, sourceLevel: 0, sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0), sourceSize: MTLSize(width: gw, height: gh, depth: 1),
-                      to: buf, destinationOffset: i * gw * gh * 4, destinationBytesPerRow: gw * 4, destinationBytesPerImage: gw * gh * 4)
-            blit.endEncoding()
-        }
-        cb.commit(); cb.waitUntilCompleted()
-        let px = buf.contents().bindMemory(to: UInt8.self, capacity: gw * gh * 4 * times.count)
-        var grid = [UInt8](repeating: 0, count: gw * gh)
-        for i in times.indices { for y in 0..<gh { for x in 0..<gw {   // texture rows are top-down; the map is bottom-up
-            let a = px[i * gw * gh * 4 + ((gh - 1 - y) * gw + x) * 4 + 3]
-            grid[y * gw + x] = max(grid[y * gw + x], a)
-        } } }
-        return ShapePlan.plan(grid: grid, gw: gw, gh: gh, origin: SIMD2(x0, y0), sil: sil, silH: silH, need: need, viewH: viewH)
-    }
-    /// Testing aid: the picked clouds' home boxes and where they are now, in view pixels (y down).
-    public func debugCopyBoxes() -> [(home: CGRect, now: CGRect)] {
-        guard let sh = shape, layers.count == 2 else { return [] }
-        let scroll = dir * layers[1].def.speed * simTime
-        func r(_ b: SIMD4<Double>, _ off: SIMD2<Double>) -> CGRect {
-            CGRect(x: (b.x - b.z + off.x - scroll) * unit, y: Double(height) - (b.y + b.w + off.y) * unit, width: 2 * b.z * unit, height: 2 * b.w * unit)
-        }
-        return sh.copies.map { c in
-            let st = Self.copyState(sh, c.rank, simTime)
-            return (r(c.box, .zero), r(c.box, (c.target - c.centre) * st.move))
-        }
+        shape = Shape(texture: tex, rect: SIMD4(cx - wUnits / 2, cy - hUnits / 2, wUnits, hUnits),
+                      t0: t0, form: p.form, hold: p.hold, fade: p.fade, thickness: p.mask.thickness,
+                      blend: 0.15 * Double(p.mask.pad) * hUnits / Double(p.mask.height))
     }
 
     // MARK: - Offscreen
