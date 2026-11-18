@@ -4,13 +4,15 @@
  *   import { createSky } from 'sky-kit';
  *   const sky = createSky(document.querySelector('#hero'), { coverage: 0.6 });
  *   sky.set({ speed: 2 });  sky.pause();  sky.play();  sky.destroy();
+ *   sky.flyPlane();  sky.showShape({ text: 'hello' });
  *
  * The sky fills `container` at full device resolution, redraws on resize, pauses when the
  * container is off-screen or the tab is hidden, and holds still for reduced-motion users.
  *
  * How it stays cheap: each cloud layer is painted into a snapshot image a bit wider than the
  * view. Every frame only slides those images and crossfades to the next snapshot (DT seconds
- * of sky time ahead), which is painted a strip per frame in the background.
+ * of sky time ahead), which is painted a strip per frame in the background. Shapes are fed
+ * into the upcoming snapshots, so they cost nothing extra per frame either.
  */
 
 export const PALETTES = {
@@ -30,17 +32,23 @@ export const SKY_DEFAULTS = {
   skyTop: null, skyMid: null, skyLow: null,
   quality: 'high',       // 'high' | 'balanced' | 'low' — resolution of the cloud snapshots
   fps: 60,               // frame cap
+  interactive: false,    // pointer movement gently pushes the clouds, which then settle back
+  planes: false,         // occasional planes with contrails
+  trailLife: 40,         // seconds a contrail lingers
   respectReducedMotion: true,
 };
 
-const REBUILD_KEYS = ['coverage', 'shadow', 'seed', 'direction', 'palette', 'skyTop', 'skyMid', 'skyLow', 'cloudScale', 'quality'];
+const REBUILD_KEYS = ['coverage', 'shadow', 'seed', 'direction', 'palette', 'skyTop', 'skyMid', 'skyLow'];
+const RESETUP_KEYS = ['cloudScale', 'quality'];
 const QUALITY = { high: 1.25, balanced: 1.0, low: 0.75 };   // snapshot pixels per CSS pixel
-const DT = 2.0;       // seconds of sky time between snapshots
-const STRIPS = 24;    // frames used to paint one snapshot
-const MARGIN = 0.3;   // extra cloud space on each side of the view, in cloud units
+const DT = 2.0;            // seconds of sky time between snapshots
+const STRIPS = 24;         // frames used to paint one snapshot
+const MARGIN = 0.3;        // extra cloud space on each side of the view, in cloud units
+const MAX_GUSTS = 12;
+const PLANE_SPEED = 0.06;  // cloud units per second
 const LAYERS = [
-  { scale: 0.6, seed: [41.3, 7.7], speed: 0.006, morph: 0.004, haze: 0.35, farMask: 1 },
-  { scale: 1.1, seed: [13.7, 5.3], speed: 0.016, morph: 0.008, haze: 0.0,  farMask: 0 },
+  { scale: 0.6, seed: [41.3, 7.7], speed: 0.006, morph: 0.004, haze: 0.35, farMask: 1, push: 0.4 },
+  { scale: 1.1, seed: [13.7, 5.3], speed: 0.016, morph: 0.008, haze: 0.0,  farMask: 0, push: 1.0 },
 ];
 
 /**
@@ -71,6 +79,9 @@ uniform float uUpp;           // cloud units per snapshot pixel
 uniform float uViewH;         // view height in cloud units
 uniform float uMorph, uScale, uCov, uShadow, uHaze, uFarMask;
 uniform vec2 uSeed;
+uniform sampler2D uShape;     // R = shape, G = wide halo around it (cleared of other cloud)
+uniform vec4 uShapeRect;      // cloud-space x0, y0, width, height of the shape image
+uniform float uShapeAmt;      // 0 = no shape, 1 = fully formed
 out vec4 outColor;
 ${COMMON}
 const vec3 LIT = vec3(1.0, 0.98, 0.94), SHADE = vec3(0.635, 0.722, 0.902), RIM = vec3(1.0, 0.925, 0.8);
@@ -95,12 +106,21 @@ float billow(vec2 p, int oct){
   for (int i = 0; i < 6; i++){ if (i >= oct) break; s += a * abs(gnoise(p)) * 1.4; n += a; p = ROT * p * 2.03 + vec2(4.3, 1.1); a *= 0.5; }
   return s / n;
 }
+// shapes: pull cloud into the silhouette and thin out the clouds around it
+// bil: the cloud's own billow noise, so a shape keeps lumpy cloud texture inside and torn edges
+float withShape(float v, vec2 p, float bil){
+  if (uShapeAmt <= 0.0) return v;
+  vec2 su = (p - uShapeRect.xy) / uShapeRect.zw;
+  if (su.x < 0.0 || su.y < 0.0 || su.x > 1.0 || su.y > 1.0) return v;
+  vec2 s = texture(uShape, su).rg * uShapeAmt;
+  return mix(v, v * 0.5 - 0.15, s.g * (1.0 - s.r)) + s.r * (0.38 + 0.3 * bil);   // clear around it, not inside it
+}
 vec2 cumulus(vec2 p, float scale, vec2 seed, float cov, float morph){
   vec2 q = p * vec2(2.2, 3.4) / scale + seed;
   vec2 w = vec2(fbm(q * 0.5 + morph, 3), fbm(q * 0.5 + 5.2 - morph, 3));
   float base = fbm(q * 0.7 + w * 0.6, 4);
   float bil = billow(q * 2.0 + w, 3);
-  float v = base + 0.15 * (bil - 0.35);
+  float v = withShape(base + 0.15 * (bil - 0.35), p, bil);
   float thr = mix(0.22, -0.12, cov);
   float D = smoothstep(thr, thr + 0.22, v);
   float dome = smoothstep(thr, thr + 0.7, v);
@@ -109,7 +129,7 @@ vec2 cumulus(vec2 p, float scale, vec2 seed, float cov, float morph){
 float cumulusLite(vec2 p, float scale, vec2 seed, float cov, float morph){
   vec2 q = p * vec2(2.2, 3.4) / scale + seed;
   vec2 w = vec2(fbm(q * 0.5 + morph, 2), fbm(q * 0.5 + 5.2 - morph, 2));
-  float v = fbm(q * 0.7 + w * 0.6, 3);
+  float v = withShape(fbm(q * 0.7 + w * 0.6, 3), p, 0.35);
   float thr = mix(0.22, -0.12, cov);
   return smoothstep(thr, thr + 0.22, v);
 }
@@ -147,8 +167,14 @@ precision highp float;
 uniform vec2 uRes;
 uniform float uUnit, uViewH;
 uniform sampler2D uFarA, uFarB, uNearA, uNearB;
-uniform vec4 uFar, uNear;     // (window start A, window start B, window width, fade)
+uniform vec4 uFar, uNear;      // (window start A, window start B, window width, fade)
 uniform vec2 uScroll;
+uniform vec2 uPush;            // how strongly the pointer pushes the far / near layer
+uniform vec4 uGust[${MAX_GUSTS}];  // view-relative x, y and displacement dx, dy (cloud units)
+uniform int uGustN;
+uniform vec4 uPlane[2];        // view-relative start x, y and direction
+uniform vec2 uPlaneAge;        // seconds since launch, < 0 = none
+uniform float uPlaneSpeed, uTrailLife, uTrailDrift;
 out vec4 outColor;
 ${COMMON}
 vec4 layerAt(sampler2D A, sampler2D B, vec4 w, float scroll, vec2 p){
@@ -158,21 +184,111 @@ vec4 layerAt(sampler2D A, sampler2D B, vec4 w, float scroll, vec2 p){
   vec4 b = texture(B, vec2((cx - w.y) / w.z, vy));
   return mix(a, b, w.w);
 }
+vec2 gust(vec2 p){
+  vec2 d = vec2(0.0);
+  for (int i = 0; i < ${MAX_GUSTS}; i++){
+    if (i >= uGustN) break;
+    vec2 r = p - uGust[i].xy;
+    d += uGust[i].zw * exp(-dot(r, r) / 0.02);
+  }
+  return d;
+}
+float vnoise(float x){
+  float i = floor(x), f = fract(x);
+  return mix(hash12(vec2(i, 7.1)), hash12(vec2(i + 1.0, 7.1)), f * f * (3.0 - 2.0 * f));
+}
+float contrails(vec2 p, out float planeDot){
+  float tr = 0.0; planeDot = 0.0;
+  for (int i = 0; i < 2; i++){
+    float age = i == 0 ? uPlaneAge.x : uPlaneAge.y;
+    if (age < 0.0) continue;
+    vec2 S = uPlane[i].xy, D = uPlane[i].zw;
+    float head = age * uPlaneSpeed;
+    vec2 rel = p - S;
+    vec2 hp = rel - D * head;
+    planeDot = max(planeDot, exp(-dot(hp, hp) / (0.0035 * 0.0035)));
+    float ta0 = (head - dot(rel, D)) / uPlaneSpeed;
+    vec2 relw = rel - vec2(uTrailDrift * max(ta0, 0.0), 0.0);   // the trail drifts with the wind
+    float along = dot(relw, D);
+    float ta = (head - along) / uPlaneSpeed;                    // seconds since the plane passed here
+    if (along < 0.0 || ta <= 0.0) continue;
+    float across = dot(relw, vec2(-D.y, D.x)) + (vnoise(along * 18.0 + float(i) * 13.0) - 0.5) * 0.008 * min(ta * 0.1, 1.0);
+    float wdt = 0.0022 + ta * 0.0016;
+    float sep = 0.0028 * exp(-ta * 0.35);                       // two engine trails that merge
+    float u1 = (across - sep) / wdt, u2 = (across + sep) / wdt;
+    float life = exp(-ta / uTrailLife) * smoothstep(0.0, 0.8, ta) / (1.0 + ta * 0.06);
+    tr = max(tr, 0.5 * (exp(-u1 * u1) + exp(-u2 * u2)) * life);
+  }
+  return tr;
+}
 void main(){
-  vec2 p = gl_FragCoord.xy / uUnit;               // cloud units
+  vec2 p = gl_FragCoord.xy / uUnit;               // cloud units, view-relative
   vec2 ph = gl_FragCoord.xy / uRes.y;             // view-height units (for the sun glow)
   vec3 col = skyAt(gl_FragCoord.y / uRes.y);
   float sd = length(ph - vec2(0.10 * uRes.x / uRes.y, 1.05));
   col += vec3(1.0, 0.97, 0.88) * (0.20 * exp(-sd * 2.2) + 0.22 * exp(-sd * 9.0));
-  vec4 far = layerAt(uFarA, uFarB, uFar, uScroll.x, p);
+  vec2 g = uGustN > 0 ? gust(p) : vec2(0.0);
+  vec4 far = layerAt(uFarA, uFarB, uFar, uScroll.x, p - g * uPush.x);
   col = col * (1.0 - far.a) + far.rgb;
-  vec4 near = layerAt(uNearA, uNearB, uNear, uScroll.y, p);
+  if (uPlaneAge.x >= 0.0 || uPlaneAge.y >= 0.0){
+    float pd;
+    float tr = contrails(p, pd);
+    col = mix(col, vec3(1.0), clamp(tr, 0.0, 1.0) * 0.85);
+    col = mix(col, vec3(0.95, 0.97, 1.0), pd * 0.9);
+  }
+  vec4 near = layerAt(uNearA, uNearB, uNear, uScroll.y, p - g * uPush.y);
   col = col * (1.0 - near.a) + near.rgb;
   col += (hash12(gl_FragCoord.xy) - 0.5) / 255.0;
   outColor = vec4(col, 1.0);
 }`;
 
 const hex = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16) / 255);
+const smooth01 = x => { const t = Math.min(Math.max(x, 0), 1); return t * t * (3 - 2 * t); };
+
+/** White silhouette of text or an image on a transparent canvas (shape is `px` tall). */
+function silhouette(src, px) {
+  const c = document.createElement('canvas'), x = c.getContext('2d');
+  if (typeof src === 'string') {
+    const font = `800 ${px}px ui-rounded, "SF Pro Rounded", "Arial Rounded MT Bold", "Nunito", system-ui, sans-serif`;
+    x.font = font;
+    const m = x.measureText(src);
+    c.width = Math.ceil(m.width) + 2; c.height = Math.ceil(px * 1.15);
+    x.font = font; x.textBaseline = 'middle'; x.fillStyle = '#fff';
+    x.fillText(src, 1, c.height / 2);
+  } else {
+    const iw = src.naturalWidth || src.videoWidth || src.width, ih = src.naturalHeight || src.videoHeight || src.height;
+    c.height = px; c.width = Math.max(2, Math.round(px * iw / ih));
+    x.drawImage(src, 0, 0, c.width, c.height);
+    const id = x.getImageData(0, 0, c.width, c.height), d = id.data;
+    let transparent = false;
+    for (let i = 3; i < d.length; i += 4) if (d[i] < 250) { transparent = true; break; }
+    for (let i = 0; i < d.length; i += 4) {   // transparent images: use alpha; opaque ones: dark = shape
+      const lum = (0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]) / 255;
+      d[i + 3] = transparent ? d[i + 3] : Math.round((1 - lum) * 255);
+      d[i] = d[i + 1] = d[i + 2] = 255;
+    }
+    x.putImageData(id, 0, 0);
+  }
+  return c;
+}
+/** Smooth blur of an alpha channel: three box-blur passes each way (close to a Gaussian). */
+function blurAlpha(alpha, w, h, radius) {
+  let a = Float32Array.from(alpha), b = new Float32Array(w * h);
+  const r = Math.max(1, Math.round(radius / 1.7));
+  const pass = (src, dst, n, m, stride, step) => {   // n lines of m samples
+    for (let i = 0; i < n; i++) {
+      const base = i * stride;
+      let acc = 0;
+      for (let k = -r; k <= r; k++) acc += src[base + Math.min(m - 1, Math.max(0, k)) * step];
+      for (let j = 0; j < m; j++) {
+        dst[base + j * step] = acc / (2 * r + 1);
+        acc += src[base + Math.min(m - 1, j + r + 1) * step] - src[base + Math.max(0, j - r) * step];
+      }
+    }
+  };
+  for (let k = 0; k < 3; k++) { pass(a, b, h, w, w, 1); pass(b, a, w, h, 1, w); }
+  return a;
+}
 
 export function createSky(container, options = {}) {
   const S = { ...SKY_DEFAULTS, ...options };
@@ -182,12 +298,16 @@ export function createSky(container, options = {}) {
   if (getComputedStyle(container).position === 'static') container.style.position = 'relative';
   container.insertBefore(canvas, container.firstChild);
 
-  let gl = null, cloudProg = null, compProg = null;
+  let gl = null, cloudProg = null, compProg = null, emptyTex = null, shapeTex = null;
   let layers = [];
   let unit = 1, viewH = 1, cacheW = 0, cacheH = 0, winW = 0;
   let simTime = 0, last = 0, lastDraw = 0, raf = 0;
   let needsSetup = true, needsRebuild = false, needsDraw = true;
   let userPaused = false, inView = true, destroyed = false, lost = false;
+  const gusts = [];               // { x, y, dx, dy, born }
+  const planes = [];              // { x, y, dx, dy, age }
+  let nextPlane = 8;
+  let shape = null;               // { rect, t0, form, hold, fade, image }
   const reduceMotion = window.matchMedia ? matchMedia('(prefers-reduced-motion: reduce)') : null;
   const dir = () => (S.direction === 'right' ? -1 : 1);
   const effectiveSpeed = () => (S.respectReducedMotion && reduceMotion?.matches ? 0 : S.speed);
@@ -210,6 +330,10 @@ export function createSky(container, options = {}) {
     const u = new Proxy({}, { get: (c, n) => (n in c ? c[n] : (c[n] = gl.getUniformLocation(p, n))) });
     return { p, u };
   }
+  function texParams() {
+    for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]])
+      gl.texParameteri(gl.TEXTURE_2D, k, v);
+  }
   function initGL() {
     gl = canvas.getContext('webgl2', { antialias: false, alpha: false, depth: false, stencil: false, preserveDrawingBuffer: false });
     if (!gl) throw new Error('sky-kit needs WebGL2');
@@ -218,14 +342,16 @@ export function createSky(container, options = {}) {
     gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
     gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+    emptyTex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, emptyTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(4)); texParams();
+    shapeTex = null;
+    if (shape) uploadShape(shape.image);
     layers = LAYERS.map(L => ({ ...L, snaps: null }));
     needsSetup = true;
   }
   function makeSnap() {
     const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, cacheW, cacheH, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-    for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]])
-      gl.texParameteri(gl.TEXTURE_2D, k, v);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, cacheW, cacheH, 0, gl.RGBA, gl.UNSIGNED_BYTE, null); texParams();
     const fb = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -235,6 +361,14 @@ export function createSky(container, options = {}) {
   const layerSeed = L => [L.seed[0] + S.seed * 7.31, L.seed[1] + S.seed * 3.17];
   function place(L, snap, time) { snap.time = time; snap.x0 = dir() * L.speed * time - MARGIN; }
   function setSkyUniforms(u) { const [t, m, l] = colors(); gl.uniform3fv(u.uSkyTop, t); gl.uniform3fv(u.uSkyMid, m); gl.uniform3fv(u.uSkyLow, l); }
+  function shapeAmt(t) {
+    if (!shape) return 0;
+    const a = t - shape.t0, { form, hold, fade } = shape;
+    if (a <= 0) return 0;
+    if (a < form) return smooth01(a / form);
+    if (a < form + hold) return 1;
+    return 1 - smooth01((a - form - hold) / fade);
+  }
   function paint(L, snap, strip) {
     const u = cloudProg.u;
     gl.useProgram(cloudProg.p);
@@ -248,6 +382,10 @@ export function createSky(container, options = {}) {
     gl.uniform1f(u.uMorph, snap.time * L.morph); gl.uniform1f(u.uScale, L.scale);
     gl.uniform1f(u.uCov, S.coverage); gl.uniform1f(u.uShadow, S.shadow);
     gl.uniform1f(u.uHaze, L.haze); gl.uniform1f(u.uFarMask, L.farMask); gl.uniform2fv(u.uSeed, layerSeed(L));
+    const amt = L === layers[1] && shapeTex ? shapeAmt(snap.time) : 0;
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, amt > 0 ? shapeTex : emptyTex); gl.uniform1i(u.uShape, 0);
+    gl.uniform1f(u.uShapeAmt, amt);
+    gl.uniform4fv(u.uShapeRect, shape ? shape.rect : [0, 0, 1, 1]);
     setSkyUniforms(u);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.disable(gl.SCISSOR_TEST);
@@ -266,13 +404,13 @@ export function createSky(container, options = {}) {
     viewH = canvas.height / unit;
     cacheH = Math.max(1, Math.round(canvas.height * q));
     const upp = viewH / cacheH;
-    winW = canvas.width / unit + 2 * MARGIN;
-    cacheW = Math.ceil(winW / upp);
+    cacheW = Math.ceil((canvas.width / unit + 2 * MARGIN) / upp);
     winW = cacheW * upp;
     for (const L of layers) {
+      const t0 = L.snaps ? L.snaps[0].time : simTime;
       if (L.snaps) L.snaps.forEach(freeSnap);
       L.snaps = [makeSnap(), makeSnap(), makeSnap()];
-      L.snaps.forEach((s, k) => place(L, s, simTime + k * DT));
+      L.snaps.forEach((s, k) => place(L, s, t0 + k * DT));
     }
     rebuildAll();
   }
@@ -286,7 +424,126 @@ export function createSky(container, options = {}) {
     const C = L.snaps[2];
     if (C.strip < STRIPS) paint(L, C, C.strip++);
   }
-  function composite() {
+
+  // ---------- pointer wind ----------
+  let lastPtr = null;
+  function onPointerMove(e) {
+    if (!S.interactive || !unit) return;
+    const r = container.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+    const x = (e.clientX - r.left) * dpr / unit, y = (r.bottom - e.clientY) * dpr / unit;
+    const now = performance.now();
+    if (lastPtr) {
+      const dt = Math.max((now - lastPtr.t) / 1000, 0.008);
+      const dx = x - lastPtr.x, dy = y - lastPtr.y;
+      if (Math.hypot(dx, dy) > 0.015) {
+        let vx = dx / dt, vy = dy / dt;
+        const sp = Math.hypot(vx, vy), cap = 0.6;          // ignore frantic flicks
+        if (sp > cap) { vx *= cap / sp; vy *= cap / sp; }
+        gusts.push({ x, y, dx: vx * 0.09, dy: vy * 0.09, born: now });
+        if (gusts.length > MAX_GUSTS) gusts.shift();
+        lastPtr = { x, y, t: now };
+        redraw(false);
+      }
+    } else lastPtr = { x, y, t: now };
+  }
+  const onPointerLeave = () => { lastPtr = null; };
+  container.addEventListener('pointermove', onPointerMove, { passive: true });
+  container.addEventListener('pointerleave', onPointerLeave, { passive: true });
+  function gustUniforms(now) {
+    while (gusts.length && now - gusts[0].born > 5000) gusts.shift();
+    const data = new Float32Array(MAX_GUSTS * 4);
+    gusts.forEach((g, i) => {
+      const age = (now - g.born) / 1000;
+      const env = Math.min(age / 0.15, 1) * Math.exp(-Math.max(age - 0.15, 0) / 1.1);   // push, then settle back
+      data.set([g.x, g.y, g.dx * env, g.dy * env], i * 4);
+    });
+    return data;
+  }
+
+  // ---------- planes ----------
+  function launchPlane(x, y, dx, dy) {
+    const l = Math.hypot(dx, dy) || 1;
+    if (planes.length >= 2) planes.shift();
+    planes.push({ x, y, dx: dx / l, dy: dy / l, age: 0 });
+  }
+  function randomPlane() {
+    const vw = canvas.width / unit;
+    const fromLeft = Math.random() < 0.5, y = viewH * (0.5 + Math.random() * 0.4), ang = (Math.random() - 0.5) * 0.35;
+    const dx = Math.cos(ang) * (fromLeft ? 1 : -1), dy = Math.sin(ang);
+    launchPlane(fromLeft ? -0.05 : vw + 0.05, y, dx, dy);
+  }
+  function updatePlanes(dt) {
+    const vw = canvas.width / unit;
+    for (const pl of planes) pl.age += dt;
+    while (planes.length && planes[0].age > (vw + 0.6) / PLANE_SPEED + S.trailLife * 3) planes.shift();
+    if (S.planes) { nextPlane -= dt; if (nextPlane <= 0) { randomPlane(); nextPlane = 25 + Math.random() * 35; } }
+  }
+
+  // ---------- shapes ----------
+  function uploadShape(img) {
+    if (!gl) return;
+    if (!shapeTex) shapeTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, shapeTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, img.width, img.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, img.data);   // rows already bottom-up
+    texParams();
+  }
+  function buildShapeImage(src) {
+    const sil = silhouette(src, 220);
+    const pad = Math.round(sil.height * 0.45);
+    const w = sil.width + pad * 2, h = sil.height + pad * 2;
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    const cx = c.getContext('2d'); cx.drawImage(sil, pad, pad);
+    const px = cx.getImageData(0, 0, w, h).data, alpha = new Float32Array(w * h);
+    for (let i = 0; i < w * h; i++) alpha[i] = px[i * 4 + 3];
+    const near = blurAlpha(alpha, w, h, 9), wide = blurAlpha(alpha, w, h, 34);
+    const data = new Uint8Array(w * h * 4);
+    for (let y = 0; y < h; y++) {                 // write rows bottom-up (GL texture order)
+      for (let x = 0; x < w; x++) {
+        const s = (h - 1 - y) * w + x, d = (y * w + x) * 4;
+        data[d] = Math.min(255, near[s]);
+        data[d + 1] = Math.min(255, wide[s] * 1.8);
+        data[d + 3] = 255;
+      }
+    }
+    return { width: w, height: h, data, silH: sil.height };
+  }
+  function placeShape(src, o) {
+    const img = buildShapeImage(src);
+    const N = layers[1];
+    const t0 = N.snaps ? N.snaps[2].time : simTime + DT;   // first snapshot not painted yet
+    const vw = canvas.width / unit;
+    const hUnits = (o.size ?? 0.32) * viewH * (img.height / img.silH);
+    const wUnits = hUnits * img.width / img.height;
+    const cx = (o.x ?? 0.5) * vw + dir() * N.speed * t0, cy = (o.y ?? 0.6) * viewH;
+    shape = { image: img, rect: [cx - wUnits / 2, cy - hUnits / 2, wUnits, hUnits], t0,
+              form: o.form ?? 4, hold: o.hold ?? 6, fade: o.fade ?? 8 };
+    uploadShape(img);
+    redraw();
+  }
+
+  // ---------- frame loop ----------
+  const running = () => !destroyed && !lost && !userPaused && inView && !document.hidden;
+  function frame(now) {
+    raf = 0;
+    if (destroyed || lost) return;
+    const moving = running() && effectiveSpeed() > 0;
+    const stirring = inView && !document.hidden && gusts.length > 0;
+    if ((moving || stirring) && now - lastDraw < 1000 / S.fps - 1 && !needsDraw) { schedule(); return; }
+    const dt = last ? Math.min((now - last) / 1000, 0.1) : 0;
+    last = now;
+    if (container.clientWidth < 1 || container.clientHeight < 1) return;    // not laid out yet
+    const dpr = window.devicePixelRatio || 1;
+    const w = Math.round(container.clientWidth * dpr), h = Math.round(container.clientHeight * dpr);
+    if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; needsSetup = true; }
+    if (needsSetup) { setupCaches(); needsSetup = false; needsRebuild = false; }
+    if (needsRebuild) { rebuildAll(); needsRebuild = false; }
+    if (moving) { const sdt = dt * effectiveSpeed(); simTime += sdt; updatePlanes(sdt); }
+    for (const L of layers) advance(L);
+    composite(now);
+    lastDraw = now; needsDraw = false;
+    if (moving || gusts.length) schedule();
+  }
+  function composite(now = performance.now()) {
     const u = compProg.u;
     gl.useProgram(compProg.p);
     gl.viewport(0, 0, canvas.width, canvas.height);
@@ -300,65 +557,86 @@ export function createSky(container, options = {}) {
     const win = L => [L.snaps[0].x0, L.snaps[1].x0, winW, Math.min(1, Math.max(0, (simTime - L.snaps[0].time) / DT))];
     gl.uniform4fv(u.uFar, win(F)); gl.uniform4fv(u.uNear, win(N));
     gl.uniform2f(u.uScroll, dir() * F.speed * simTime, dir() * N.speed * simTime);
+    gl.uniform2f(u.uPush, F.push, N.push);
+    gl.uniform4fv(u.uGust, gustUniforms(now)); gl.uniform1i(u.uGustN, gusts.length);
+    const pv = new Float32Array(8), pa = [-1, -1];
+    planes.forEach((pl, i) => { pv.set([pl.x, pl.y, pl.dx, pl.dy], i * 4); pa[i] = pl.age; });
+    gl.uniform4fv(u.uPlane, pv); gl.uniform2fv(u.uPlaneAge, pa);
+    gl.uniform1f(u.uPlaneSpeed, PLANE_SPEED); gl.uniform1f(u.uTrailLife, S.trailLife);
+    gl.uniform1f(u.uTrailDrift, -dir() * F.speed);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
-
-  // ---------- frame loop ----------
-  const running = () => !destroyed && !lost && !userPaused && inView && !document.hidden;
-  function frame(now) {
-    raf = 0;
-    if (destroyed || lost) return;
-    const moving = running() && effectiveSpeed() > 0;
-    if (moving && now - lastDraw < 1000 / S.fps - 1 && !needsDraw) { schedule(); return; }
-    const dt = last ? Math.min((now - last) / 1000, 0.1) : 0;
-    last = now;
-    if (container.clientWidth < 1 || container.clientHeight < 1) return;    // not laid out yet
-    const dpr = window.devicePixelRatio || 1;
-    const w = Math.round(container.clientWidth * dpr), h = Math.round(container.clientHeight * dpr);
-    if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; needsSetup = true; }
-    if (needsSetup) { setupCaches(); needsSetup = false; needsRebuild = false; }
-    if (needsRebuild) { rebuildAll(); needsRebuild = false; }
-    if (moving) simTime += dt * effectiveSpeed();
-    for (const L of layers) advance(L);
-    composite();
-    lastDraw = now; needsDraw = false;
-    if (moving) schedule();
-  }
   function schedule() { if (!raf && !destroyed) raf = requestAnimationFrame(frame); }
-  function redraw() { needsDraw = true; last = 0; schedule(); }
+  function redraw(resetClock = true) { needsDraw = true; if (resetClock) last = 0; schedule(); }
 
   // ---------- observers ----------
-  const ro = new ResizeObserver(redraw); ro.observe(container);
+  const ro = new ResizeObserver(() => redraw()); ro.observe(container);
   const io = new IntersectionObserver(es => { inView = es[es.length - 1].isIntersecting; if (inView) redraw(); });
   io.observe(container);
   const onVis = () => { if (!document.hidden) redraw(); };
   document.addEventListener('visibilitychange', onVis);
-  reduceMotion?.addEventListener?.('change', redraw);
+  const onMotionPref = () => redraw();
+  reduceMotion?.addEventListener?.('change', onMotionPref);
   canvas.addEventListener('webglcontextlost', e => { e.preventDefault(); lost = true; if (raf) cancelAnimationFrame(raf); raf = 0; });
   canvas.addEventListener('webglcontextrestored', () => { lost = false; initGL(); redraw(); });
 
   initGL();
   redraw();
 
+  const loadImage = url => new Promise((res, rej) => { const i = new Image(); i.crossOrigin = 'anonymous'; i.onload = () => res(i); i.onerror = rej; i.src = url; });
+
   return {
     canvas,
     get options() { return { ...S }; },
     set(o) {
-      const sizeChange = ('cloudScale' in o && o.cloudScale !== S.cloudScale) || ('quality' in o && o.quality !== S.quality);
+      const resetup = RESETUP_KEYS.some(k => k in o && o[k] !== S[k]);
       const rebuild = REBUILD_KEYS.some(k => k in o && o[k] !== S[k]);
       Object.assign(S, o);
-      if (sizeChange) needsSetup = true;
+      if (resetup) needsSetup = true;
       else if (rebuild && layers[0]?.snaps) needsRebuild = true;
       redraw();
     },
     pause() { userPaused = true; },
     play() { userPaused = false; redraw(); },
+    /** Send a plane across. Positions are 0..1 of the view; default: from a random side. */
+    flyPlane(o = {}) {
+      if (!layers[0]?.snaps) return;
+      if (o.from && o.to) {
+        const vw = canvas.width / unit;
+        launchPlane(o.from[0] * vw, o.from[1] * viewH, (o.to[0] - o.from[0]) * vw, (o.to[1] - o.from[1]) * viewH);
+      } else randomPlane();
+      redraw(false);
+    },
+    /**
+     * Clouds gather into a shape, hold it, then melt back into ordinary clouds while drifting.
+     * { text } or { image: HTMLImageElement | canvas | url }, plus optional
+     * x, y (0..1 of the view, centre), size (0..1 of the view height), form, hold, fade (seconds).
+     * Needs speed > 0: shapes form as the sky moves on.
+     */
+    async showShape(o) {
+      let src = o.text;
+      if (o.image) src = typeof o.image === 'string' ? await loadImage(o.image) : o.image;
+      if (!src || !layers[0]?.snaps) return;
+      placeShape(src, o);
+    },
+    clearShape() { shape = null; },
+    /** Testing aid: fast-forward sky time as if `seconds` passed at 30 fps, then draw. */
+    _step(seconds) {
+      if (!layers[0]?.snaps) return;
+      for (let i = 0, n = Math.round(seconds * 30); i < n; i++) {
+        const sdt = effectiveSpeed() / 30; simTime += sdt; updatePlanes(sdt);
+        for (const L of layers) advance(L);
+      }
+      composite();
+    },
     /** PNG data URL of the current frame (null before the first frame). */
     snapshot() { if (needsSetup || !layers[0]?.snaps) return null; composite(); return canvas.toDataURL('image/png'); },
     destroy() {
       destroyed = true; if (raf) cancelAnimationFrame(raf);
       ro.disconnect(); io.disconnect(); document.removeEventListener('visibilitychange', onVis);
-      reduceMotion?.removeEventListener?.('change', redraw);
+      reduceMotion?.removeEventListener?.('change', onMotionPref);
+      container.removeEventListener('pointermove', onPointerMove);
+      container.removeEventListener('pointerleave', onPointerLeave);
       gl?.getExtension('WEBGL_lose_context')?.loseContext();
       canvas.remove();
     },
