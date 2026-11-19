@@ -11,7 +11,7 @@ Live demo, with the code for whatever you set: https://claude.ai/artifact/8YKLPN
 - **Web:** one ES module, `web/src/sky.js`. No dependencies, no build step. The API's source of truth is `web/src/sky.d.ts`. The React wrapper is `web/src/react.js`, typed in `react.d.ts`.
 - **Swift:** a SwiftPM package at the repo root, library `SkyKit`, iOS 16+ and macOS 13+.
 - **npm:** not published. Use jsDelivr or copy the file. `npm install github:filip-pilar/sky-kit` does not work: the repo root is a private workspace, not the library.
-- **Version:** the latest tag is `v0.3.0`. Licence: MIT.
+- **Version:** the latest tag is `v0.3.1`. Licence: MIT.
 - **Cost:** a plain sky is about 0.6 ms of GPU per frame at iPhone resolution on an M4, 1 ms at 2880×1800. A shape on screen adds about 2–3 ms per repaint at iPhone resolution, 5–7 ms at 2880×1800.
 - **When it draws:**
   - It draws 30 fps unless something moves more than about a point a frame (then up to `fps`, default 60).
@@ -24,7 +24,7 @@ Live demo, with the code for whatever you set: https://claude.ai/artifact/8YKLPN
 **Web, from GitHub through jsDelivr** (pin the tag):
 
 ```js
-import { createSky } from 'https://cdn.jsdelivr.net/gh/filip-pilar/sky-kit@v0.3.0/web/src/sky.js';
+import { createSky } from 'https://cdn.jsdelivr.net/gh/filip-pilar/sky-kit@v0.3.1/web/src/sky.js';
 ```
 
 **Web, copied into your project:** copy `web/src/sky.js` and, for TypeScript, `web/src/sky.d.ts`. For React, also copy `web/src/react.js` and `react.d.ts`; it imports `./sky.js` from the same folder.
@@ -32,7 +32,7 @@ import { createSky } from 'https://cdn.jsdelivr.net/gh/filip-pilar/sky-kit@v0.3.
 **Swift**, in `Package.swift` or with Xcode › File › Add Package Dependencies:
 
 ```swift
-.package(url: "https://github.com/filip-pilar/sky-kit", from: "0.3.0")   // product: "SkyKit"
+.package(url: "https://github.com/filip-pilar/sky-kit", from: "0.3.1")   // product: "SkyKit"
 ```
 
 ## Web
@@ -42,7 +42,7 @@ import { createSky } from 'https://cdn.jsdelivr.net/gh/filip-pilar/sky-kit@v0.3.
   <h1>Content placed here sits on top of the sky</h1>
 </div>
 <script type="module">
-  import { createSky } from 'https://cdn.jsdelivr.net/gh/filip-pilar/sky-kit@v0.3.0/web/src/sky.js';
+  import { createSky } from 'https://cdn.jsdelivr.net/gh/filip-pilar/sky-kit@v0.3.1/web/src/sky.js';
 
   const sky = createSky(document.querySelector('#hero'), { coverage: 0.6, planes: true });
   sky.showShape({ text: 'hello' });                           // a nearby cloud turns into "hello", holds, turns back
@@ -106,7 +106,7 @@ How shapes behave:
 
 - **Which cloud:** the shape forms on a real cloud near `x, y`. That cloud reshapes into it and back, and stays.
 - **Call order wins:** a newer `showShape` (not queued) replaces an older one still loading its image, and queued ones keep their call order.
-- **Several at once:** give each shape its own `id` (`showShape({ text: 'hi', id: 'left', x: 0.25 })`, `showShape({ symbol: 'star', id: 'right', x: 0.75 })`). Each id behaves like a single shape: its own takeover rules and its own queue. A new shape keeps off the other shapes' clouds and boxes. With 3 ids on screen, a 4th id takes over the one used longest ago.
+- **Several at once:** give each shape its own `id` (`showShape({ text: 'hi', id: 'left', x: 0.25 })`, `showShape({ symbol: 'star', id: 'right', x: 0.75 })`). Each id behaves like a single shape: its own takeover rules and its own queue. A new shape keeps off the other shapes' clouds and boxes. With 3 ids on screen, a 4th id takes over the one used longest ago. If there's no room beside the others (no cloud left for it, or its spot would overlap one), a new shape takes over the one used longest ago as well, so shapes never overlap: about two large words fit on a laptop-shaped view, three on a phone.
 - **Calling `showShape` while a shape shows** takes over without a jump:
   - if that shape is holding, it turns into the new one now;
   - if it is still forming, as soon as it has formed;

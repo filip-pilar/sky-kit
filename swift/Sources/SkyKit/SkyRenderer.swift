@@ -494,6 +494,17 @@ public final class SkyRenderer {
         placeShape(lane, p)
     }
     private func isIdle(_ l: Lane) -> Bool { l.shape == nil && l.pending == nil && l.queue.isEmpty }
+    /// No room for a shape beside the others: the lane used longest ago takes it over (its shape turns into this one,
+    /// by the takeover rules), with this lane's id and queue; this lane is left free.
+    private func crowded(_ lane: Lane, _ p: PendingShape) {
+        guard let other = lanes.filter({ $0 !== lane && $0.shape != nil }).min(by: { $0.used < $1.used }) else { return }
+        laneUse += 1
+        other.id = lane.id; other.used = laneUse
+        other.queue += lane.queue; lane.queue.removeAll(); lane.pending = nil
+        lane.id = "\u{0}\(laneUse)"
+        var n = p; n.near = nil; n.startAt = nil
+        takeOver(other, n)
+    }
     /// The lane for an id: its own, else a free one, else a new one, else (all maxLanes busy) the one used longest
     /// ago, whose shape the new one takes over.
     private func laneFor(_ id: String) -> Lane {
@@ -568,6 +579,13 @@ public final class SkyRenderer {
         if from != nil || found != nil {
             cx = min(max(cx, allowed.x), allowed.z)
             cy = min(max(cy, allowed.y), allowed.w)
+        }
+        // no room for it beside the other shapes (no cloud left, or its spot overlaps one): it takes over the one
+        // used longest ago instead (as in sky.js)
+        let mine = SIMD4(cx - hw - 0.03, cy - hh - 0.03, cx + hw + 0.03, cy + hh + 0.03)
+        if from == nil, !others.isEmpty,
+           found == nil || others.contains(where: { mine.x < $0.box.z && $0.box.x < mine.z && mine.y < $0.box.w && $0.box.y < mine.w }) {
+            crowded(lane, p); return
         }
         let rect = SIMD4(cx - wUnits / 2, cy - hUnits / 2, wUnits, hUnits)
         var blend = 0.15 * Double(p.mask.pad) * hUnits / Double(p.mask.height)   // inside the masks' all-zero margins

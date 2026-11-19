@@ -1028,6 +1028,15 @@ export function createSky(container, options = {}) {
         cx = Math.min(Math.max(cx, allowed[0]), allowed[2]);
         cy = Math.min(Math.max(cy, allowed[1]), allowed[3]);
       }
+      // no room for it beside the other shapes (no cloud left, or its spot overlaps one): it takes over the one
+      // used longest ago instead
+      const mine = [cx - hw - 0.03, cy - hh - 0.03, cx + hw + 0.03, cy + hh + 0.03];
+      const others = from ? [] : lanes.filter(l => l !== ln && l.shape).map(l => l.shape.box);
+      if (others.length && (!found || others.some(b => mine[0] < b[2] && b[0] < mine[2] && mine[1] < b[3] && b[1] < mine[3]))) {
+        if (found) gl.deleteTexture(found.src.tex);
+        crowded(ln, img, o);
+        return;
+      }
       const rect = [cx - wUnits / 2, cy - hUnits / 2, wUnits, hUnits];
       let src = found ? found.src : null, cloudAt = found ? [found.x, found.y] : [cx, cy], prev = null, area = rect, blend = 0.15 * img.pad * hUnits / img.height;
       if (from) {
@@ -1234,6 +1243,15 @@ export function createSky(container, options = {}) {
     else { ln.queue.unshift({ img, o: { ...o, pause: 0, _asap: amt < 1 } }); placeNext(ln); }
   }
   const idle = ln => !ln.shape && !ln.queue.length && !ln.leadBuilding && !ln.deferred && placing?.lane !== ln;
+  // no room for a shape beside the others: the lane used longest ago takes it over (its shape turns into this one, by
+  // the takeover rules), with this lane's id and queue; this lane is left free
+  function crowded(ln, img, o) {
+    const other = lanes.filter(l => l !== ln && l.shape).reduce((a, b) => (b.used < a.used ? b : a));
+    other.id = ln.id; other.used = ++laneUse; other.ticket++;
+    other.queue.push(...ln.queue); ln.queue = []; ln.deferred = null;
+    ln.id = '\u0000' + laneUse;
+    takeOver(other, img, { ...o, _near: undefined, _t0: undefined });
+  }
   // the lane for an id: its own, else a free one, else a new one, else (all MAX_LANES busy) the one used longest ago,
   // whose shape the new one takes over
   function laneFor(id) {
@@ -1343,7 +1361,7 @@ export function createSky(container, options = {}) {
       const queued = !!o.queue && (!!ln.shape || placing?.lane === ln || !!ln.deferred || ln.queue.length > 0 || ln.leadBuilding > 0);
       const slot = queued ? { img: null, o } : null;
       if (slot) ln.queue.push(slot);                         // keeps call order while the images build
-      else { ln.ticket++; ln.queue = []; ln.leadBuilding++; }
+      else { ln.ticket++; ln.queue = []; ln.deferred = null; ln.leadBuilding++; }
       const ticket = ln.ticket;                              // a newer showShape or a clearShape wins
       let img = null, error = null;
       try {
