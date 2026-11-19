@@ -61,7 +61,7 @@ Props are the options below; changing a prop updates the sky live, and removing 
 | `skyTop`, `skyMid`, `skyLow` | `null` | custom hex colours, override the palette |
 | `gradient` | `0` | 0 = even blue sky, 1 = deep blue fading to a pale horizon |
 | `quality` | `'high'` | `'high'`, `'balanced'`, `'low'` (snapshot resolution) |
-| `fps` | `60` | frame cap |
+| `fps` | `60` | most frames per second; the sky draws 30 while nothing moves more than about a point a frame (a gentle drift with no plane crossing) |
 | `planes` | `false` | occasional planes with contrails |
 | `trailLife` | `40` | seconds a contrail lingers |
 | `respectReducedMotion` | `true` | hold still when the user prefers reduced motion |

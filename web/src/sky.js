@@ -32,7 +32,7 @@ export const SKY_DEFAULTS = {
   skyTop: null, skyMid: null, skyLow: null,
   gradient: 0,           // 0 = even blue sky, 1 = deep blue fading to a pale horizon
   quality: 'high',       // 'high' | 'balanced' | 'low' — resolution of the cloud snapshots
-  fps: 60,               // frame cap
+  fps: 60,               // most frames per second (30 while nothing moves more than about a point a frame: see frameRate)
   planes: false,         // occasional planes with contrails
   trailLife: 40,         // seconds a contrail lingers
   respectReducedMotion: true,
@@ -794,11 +794,13 @@ export function createSky(container, options = {}) {
   }
   // While a shape is on screen, the near clouds over its area are rendered live (same resolution as the
   // snapshots), with the shape folded into the cloud density. The patch is placed with the clouds every
-  // frame and changes slowly, so it is repainted at most 30 times per second of sky time.
+  // frame and changes slowly, so it is repainted at most 30 times per second of sky time, and 15 while the shape
+  // only holds (then just the clouds' slow change moves it: a level or two of 255 per repaint).
   function paintPatch() {
     const amt = shapeAmt(simTime), melt = shapeMelt(simTime);
     if (amt <= 0 || melt >= 1 || !shapeTex || !layers[1]) { shape.patchReady = false; return; }
-    if (shape.patchReady && simTime - shape.patch.time < 1 / 30 - 1e-9) return;
+    const every = amt >= 1 && melt <= 0 ? 1 / 15 : 1 / 30;
+    if (shape.patchReady && simTime - shape.patch.time < every * 0.8) return;   // (frames come a little early or late)
     shape.patchReady = false;
     const upp = viewH / cacheH, r = shape.area, fade = shape.fade_;
     // only the part of the shape's area that is on screen (plus the blend border, which stays off screen)
@@ -1062,11 +1064,18 @@ export function createSky(container, options = {}) {
 
   // ---------- frame loop ----------
   const running = () => !destroyed && !lost && !userPaused && inView && !document.hidden;
+  // Frames per second: up to S.fps, but 30 while nothing moves more than about a point a frame at 30 (the clouds'
+  // drift, or a plane crossing the view), which looks the same for half the work.
+  function frameRate() {
+    const vw = canvas.width / unit, crossing = planes.some(pl => pl.age * PLANE_SPEED < vw + 0.2);
+    const speed = effectiveSpeed() * Math.max(LAYERS[1].speed, crossing ? PLANE_SPEED : 0);   // cloud units per second
+    return speed * unit / (window.devicePixelRatio || 1) > 30 ? S.fps : Math.min(S.fps, 30);
+  }
   function frame(now) {
     raf = 0;
     if (destroyed || lost) return;
     const moving = running() && effectiveSpeed() > 0;
-    if (moving && now - lastDraw < 1000 / S.fps - 1 && !needsDraw) { schedule(); return; }
+    if (moving && now - lastDraw < 1000 / frameRate() - 1 && !needsDraw) { schedule(); return; }
     const dt = last ? Math.min((now - last) / 1000, 0.1) : 0;
     last = now;
     if (container.clientWidth < 1 || container.clientHeight < 1) return;    // not laid out yet

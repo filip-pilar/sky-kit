@@ -24,6 +24,7 @@ public struct SkyOptions: Equatable, Sendable {
     public var gradient: Double = 0
     /// Resolution of the cloud snapshots.
     public var quality: Quality = .high
+    /// Most frames per second (30 while nothing moves more than about a point a frame: see SkyRenderer.frameRate).
     public var fps: Int = 60
     /// Occasional planes with contrails.
     public var planes = false

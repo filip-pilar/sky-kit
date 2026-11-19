@@ -141,6 +141,13 @@ public final class SkyRenderer {
     private var effectiveSpeed: Double { options.respectReducedMotion && reduceMotion ? 0 : options.speed }
     /// True while the sky is moving (the host can pause its display link otherwise).
     public var isAnimating: Bool { effectiveSpeed > 0 }
+    /// Frames per second: up to options.fps, but 30 while nothing moves more than about a point a frame at 30 (the
+    /// clouds' drift, or a plane crossing the view), which looks the same for half the work.
+    public var frameRate: Int {
+        let vw = Double(width) / unit, crossing = planes.contains { $0.age * Self.planeSpeed < vw + 0.2 }
+        let speed = effectiveSpeed * max(Self.layerDefs[1].speed, crossing ? Self.planeSpeed : 0)   // cloud units per second
+        return speed * unit / pixelsPerPoint > 30 ? options.fps : min(options.fps, 30)
+    }
 
     private func setup() {
         let q = min(1, max(0.35, (Self.qualityFactor[options.quality] ?? 1.25) / pixelsPerPoint))
@@ -227,7 +234,8 @@ public final class SkyRenderer {
         guard let sh = shape else { return }
         let amt = shapeAmount(at: simTime), melt = shapeMelt(at: simTime)
         guard amt > 0, melt < 1, layers.count == 2 else { sh.patchReady = false; return }
-        if sh.patchReady && simTime - sh.patchTime < 1.0 / 30 - 1e-9 { return }
+        let every = amt >= 1 && melt <= 0 ? 1.0 / 15 : 1.0 / 30   // 15 while it only holds (see paintPatch in sky.js)
+        if sh.patchReady && simTime - sh.patchTime < every * 0.8 { return }   // (frames come a little early or late)
         sh.patchReady = false
         let upp = viewH / Double(cacheH), r = sh.area, fade = sh.blend
         let scroll = dir * layers[1].def.speed * simTime, vw = Double(width) / unit

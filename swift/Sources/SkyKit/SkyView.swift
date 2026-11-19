@@ -130,6 +130,7 @@ struct SkyMetalView {
             try? renderer.draw(to: drawable.texture, commandBuffer: cb)
             cb.present(drawable)
             cb.commit()
+            if view.preferredFramesPerSecond != renderer.frameRate { view.preferredFramesPerSecond = renderer.frameRate }
             if !renderer.isAnimating { view.isPaused = true }   // nothing moving: stop until something wakes us
         }
 

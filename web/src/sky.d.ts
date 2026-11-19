@@ -24,7 +24,7 @@ export interface SkyOptions {
   gradient?: number;
   /** Resolution of the cloud snapshots. Default 'high'. */
   quality?: Quality;
-  /** Frame cap. Default 60. */
+  /** Most frames per second. Default 60; the sky draws 30 while nothing moves more than about a point a frame (a gentle drift with no plane crossing). */
   fps?: number;
   /** Occasional planes with contrails. Default false. */
   planes?: boolean;
