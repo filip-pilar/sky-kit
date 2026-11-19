@@ -6,6 +6,7 @@
 //            at --shape-x 0..1, --size 0..1 (symbols), --form/--hold/--fade seconds, --hold-forever, --density 0..1,
 //            --pause seconds between chained words (0 = straight from one to the next), --release-at seconds
 //   --symbol-sheet out.png draws the built-in symbols side by side
+//   --compare dirA dirB [--tolerance N] compares the PNGs of two folders pixel by pixel (exit 1 if any differs by more than N)
 import Foundation
 import CoreGraphics
 import ImageIO
@@ -15,6 +16,7 @@ var opts = SkyOptions()
 var width = 1600, height = 1000, seconds = 0.0, scale = 2.0, out = "sky.png"
 var shapeText: String? = nil, plane = false, heart = false, shapeX = 0.5
 var releaseAt: Double? = nil
+var compare: (String, String)? = nil, tolerance = 0
 var form = 5.0, hold = 5.0, fade = 7.0, density = 0.5, pause = 1.0, symbol: SkySymbol? = nil, size = 0.32, symbolSheet: String? = nil
 
 /// The heart web/examples/parity.html uses (SVG path, viewBox 100×92), drawn at 220 px tall.
@@ -67,11 +69,43 @@ while !args.isEmpty {
     case "--size": size = Double(value()) ?? size
     case "--symbol-sheet": symbolSheet = value()             // just draw every symbol side by side into this PNG and exit
     case "--plane": plane = true                        // a plane from (0, 0.7) to (1, 0.75) at time 0
+    case "--compare": compare = (value(), value())
+    case "--tolerance": tolerance = Int(value()) ?? 0
     case let other:
         FileHandle.standardError.write("unknown option \(other)\n".data(using: .utf8)!); exit(2)
     }
 }
 
+/// RGBA pixels of a PNG (any colour profile, drawn into sRGB).
+func pixels(_ path: String) -> (w: Int, h: Int, rgba: [UInt8])? {
+    guard let src = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
+          let img = CGImageSourceCreateImageAtIndex(src, 0, nil) else { return nil }
+    let w = img.width, h = img.height
+    var data = [UInt8](repeating: 0, count: w * h * 4)
+    let ok = data.withUnsafeMutableBytes { buf -> Bool in
+        guard let ctx = CGContext(data: buf.baseAddress, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                                  space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return false }
+        ctx.draw(img, in: CGRect(x: 0, y: 0, width: w, height: h)); return true
+    }
+    return ok ? (w, h, data) : nil
+}
+if let (a, b) = compare {
+    let files = ((try? FileManager.default.contentsOfDirectory(atPath: a)) ?? []).filter { $0.hasSuffix(".png") }.sorted()
+    var bad = 0
+    for f in files {
+        guard let x = pixels(a + "/" + f), let y = pixels(b + "/" + f) else { print("\(f): missing"); bad += 1; continue }
+        guard x.w == y.w, x.h == y.h else { print("\(f): size \(x.w)×\(x.h) vs \(y.w)×\(y.h)"); bad += 1; continue }
+        var maxD = 0, sum = 0
+        for i in 0..<(x.w * x.h) {
+            let d = max(abs(Int(x.rgba[i * 4]) - Int(y.rgba[i * 4])), abs(Int(x.rgba[i * 4 + 1]) - Int(y.rgba[i * 4 + 1])), abs(Int(x.rgba[i * 4 + 2]) - Int(y.rgba[i * 4 + 2])))
+            maxD = max(maxD, d); sum += d
+        }
+        if maxD > tolerance { bad += 1 }
+        print(String(format: "%@ %@ max %3d  mean %.4f", maxD > tolerance ? "✗" : "✓", f, maxD, Double(sum) / Double(x.w * x.h)))
+    }
+    print(files.isEmpty ? "no PNGs in \(a)" : bad == 0 ? "all \(files.count) match (tolerance \(tolerance))" : "\(bad) of \(files.count) differ")
+    exit(files.isEmpty || bad > 0 ? 1 : 0)
+}
 if let symbolSheet {   // the symbols as drawn for the masks (to compare with the browser's SVG)
     let imgs = SkySymbol.allCases.compactMap { $0.image(height: 110) }
     let W = imgs.reduce(0) { $0 + $1.width + 10 } + 10

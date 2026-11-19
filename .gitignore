@@ -4,3 +4,4 @@ node_modules/
 .swiftpm/
 *.xcodeproj/xcuserdata/
 swift/out/
+.regress/

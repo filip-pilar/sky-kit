@@ -10,21 +10,36 @@ import MetalKit
 public final class SkyController: ObservableObject {
     weak var renderer: SkyRenderer?
     var wake: (() -> Void)?
+    /// Shapes are built here, in call order, so the main thread never waits for one (tens of milliseconds each).
+    private static let builder = DispatchQueue(label: "SkyKit.shapes", qos: .userInitiated)
+    /// Bumped by a shape that isn't queued, clearShape and releaseShape: builds started before then are dropped.
+    private var ticket = 0
     public init() {}
 
     /// Send a plane across. Points are 0…1 of the view with y = 0 at the bottom; nil = from a random side.
     public func flyPlane(from: CGPoint? = nil, to: CGPoint? = nil) { renderer?.flyPlane(from: from, to: to); wake?() }
     /// A real cloud nearby reshapes into a shape, holds it, then reshapes back into itself. density 0…1
     /// (0.5 = like the clouds around); queue: form after the current shape, on the same cloud, `pause` seconds after it
-    /// has melted (0 = its outline turns straight into this one). Needs speed > 0.
+    /// has melted (0 = its outline turns straight into this one). Needs speed > 0. The shape is built in the background.
     public func showShape(_ source: SkyShapeSource, x: Double = 0.5, y: Double = 0.6, size: Double = 0.32,
                           form: Double = 5, hold: Double = 5, fade: Double = 7, density: Double = 0.5, queue: Bool = false, pause: Double = 1) {
-        renderer?.showShape(source, x: x, y: y, size: size, form: form, hold: hold, fade: fade, density: density, queue: queue, pause: pause)
-        wake?()
+        if !queue { ticket += 1 }
+        let t = ticket, label = source.label
+        Self.builder.async {
+            let mask = ShapeMask.make(source)
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { [weak self] in
+                    guard let self, let mask, t == self.ticket else { return }
+                    self.renderer?.show(mask, label: label, x: x, y: y, size: size, form: form, hold: hold, fade: fade,
+                                        density: density, queue: queue, pause: pause)
+                    self.wake?()
+                }
+            }
+        }
     }
-    public func clearShape() { renderer?.clearShape(); wake?() }
+    public func clearShape() { ticket += 1; renderer?.clearShape(); wake?() }
     /// Melt the shape on screen back into its cloud now (from wherever it is) and drop the queued ones.
-    public func releaseShape() { renderer?.releaseShape(); wake?() }
+    public func releaseShape() { ticket += 1; renderer?.releaseShape(); wake?() }
     /// What the shapes are doing right now (phase, what's on screen, what's next).
     public var shapeState: SkyShapeState { renderer?.shapeState ?? .idle }
     /// The clouds at the current moment as an image, rendered offscreen at any size (planes and shapes not included).

@@ -2,9 +2,9 @@
 
 Endless drifting painterly clouds on a bright blue sky — for the web (WebGL2, plain JS or React) and for Apple platforms (Metal, SwiftUI). Same look on both: the Swift port matches the web version to within about 0.13/255 per pixel on average.
 
-![A bright blue sky with drifting clouds](docs/preview.jpg)
+![A real cloud turns into the word "hello", which morphs into "sky" and melts back into the cloud](docs/demo.webp)
 
-![A real cloud reshaped into the word "hello"](docs/preview-shape.jpg)
+![A bright blue sky with drifting clouds](docs/preview.jpg)
 
 - Fills whatever container you put it in, at full device resolution.
 - Cheap: about 2 ms per frame at 2880×1800 on an M4 (clouds are painted into snapshots that slide, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)).
@@ -72,7 +72,7 @@ Methods: `set(options)`, `pause()`, `play()`, `flyPlane({ from, to }?)`, `showSh
 
 ### Examples
 
-Serve the repo root with any static server, e.g. `python3 -m http.server 5173`, then open:
+Serve the repo root with any static server (`bun run serve` does), then open:
 
 - `web/examples/index.html` — one component in a hero, cards, a phone-shaped box and a banner
 - `web/examples/playground.html` — every option and extra, with controls: words (chained with commas, looped), symbols, images, Stop, and the shape timing, pause, density and size
@@ -81,7 +81,13 @@ Serve the repo root with any static server, e.g. `python3 -m http.server 5173`, 
 
 ## Swift (iOS 16+, macOS 13+)
 
-Swift Package in `swift/`. Add it as a local package (or by URL once hosted), then:
+A Swift package (the manifest is at the repo root, the sources in `swift/`). Add it in Xcode with File › Add Package Dependencies, or in `Package.swift`:
+
+```swift
+.package(url: "https://github.com/filip-pilar/sky-kit", from: "0.1.0")
+```
+
+then:
 
 ```swift
 import SkyKit
@@ -105,20 +111,24 @@ struct ContentView: View {
 Also included:
 
 - `SkyRenderer` — the Metal renderer on its own, for custom views or offscreen use. `renderImage(width:height:seconds:)` returns a `CGImage` (wallpapers, thumbnails, tests).
-- `swift run SkyDemo` — a macOS window with the sky and its controls: words (chained with commas, Loop), the symbols, Stop, the forming, hold, melt, pause, density and size settings, planes.
-- `swift run sky-render --width 1600 --height 1000 --seconds 30 --out sky.png` — render a still from the command line (`--text hello`, `--plane`, `--seed`, `--palette`, …).
+- `swift run -c release SkyDemo` — a macOS window with the sky and its controls: words (chained with commas, Loop), the symbols, Stop, the forming, hold, melt, pause, density and size settings, planes.
+- `swift run -c release sky-render --width 1600 --height 1000 --seconds 30 --out sky.png` — render a still from the command line (`--text hello`, `--plane`, `--seed`, `--palette`, …).
+
+## Developing
+
+`bun install` once, then `bun run check` (JS syntax and lint, Swift build and tests). For changes to the rendering, `bun run regress:baseline` before and `bun run regress` after: both ports render 21 scenes and compare them pixel by pixel. [AGENTS.md](AGENTS.md) has the rest.
 
 ## Keeping web and Swift identical
 
 The shaders exist twice: GLSL in `web/src/sky.js`, Metal in `swift/Sources/SkyKit/Shaders.swift`, written line for line the same. After changing either:
 
 ```bash
-cd swift && swift run sky-render --width 1600 --height 1000 --seconds 30 --out out/swift-30s.png
+swift run -c release sky-render --width 1600 --height 1000 --seconds 30 --out swift/out/swift-30s.png
 ```
 
 then open `web/examples/parity.html` in a browser at device pixel ratio 2. It renders the same frame in WebGL and compares every pixel. Current result: mean difference about 0.13/255, max 9/255, almost no pixels more than 8 apart.
 
-Shapes: `sky-render --seconds 9 --symbol smile --out out/swift-smile.png` and `parity.html?symbol=smile&seconds=9&png=../../swift/out/swift-smile.png` compare a symbol (add `--release-at 3` / `release=3` for releasing). `sky-render --seconds 4.5 --heart --out out/swift-heart-4.5.png` and `parity.html?heart=1&seconds=4.5&png=../../swift/out/swift-heart-4.5.png` match too (mean about 0.15/255 while forming and melting). With extras: `sky-render --seconds 10 --text hello --plane --out out/swift-extras.png` and `parity.html?text=hello&plane=1&seconds=10&png=../../swift/out/swift-extras.png`. Sky, plane and contrail match; the letters differ, because the browser and CoreText draw the rounded font slightly differently, and since a word is placed by its width the two ports can put the same word a little apart (or, now and then, on a different cloud).
+Shapes: `sky-render --seconds 9 --symbol smile --out swift/out/swift-smile.png` and `parity.html?symbol=smile&seconds=9&png=../../swift/out/swift-smile.png` compare a symbol (add `--release-at 3` / `release=3` for releasing). `sky-render --seconds 4.5 --heart --out swift/out/swift-heart-4.5.png` and `parity.html?heart=1&seconds=4.5&png=../../swift/out/swift-heart-4.5.png` match too (mean about 0.15/255 while forming and melting). With extras: `sky-render --seconds 10 --text hello --plane --out swift/out/swift-extras.png` and `parity.html?text=hello&plane=1&seconds=10&png=../../swift/out/swift-extras.png`. Sky, plane and contrail match; the letters differ, because the browser and CoreText draw the rounded font slightly differently, and since a word is placed by its width the two ports can put the same word a little apart (or, now and then, on a different cloud).
 
 ## Known limits
 
@@ -133,6 +143,8 @@ Shapes: `sky-render --seconds 9 --symbol smile --out out/swift-smile.png` and `p
 ```
 web/src/sky.js        component (WebGL2)          web/src/react.js   React wrapper
 web/src/*.d.ts        TypeScript types            web/examples/      demos and the parity check
+web/test/             regression scenes (web)     scripts/           regress.ts, serve.ts
+Package.swift         the Swift package           swift/Tests/       Swift tests
 swift/Sources/SkyKit  SkyView, SkyRenderer, SkyOptions, Metal shaders, shape masks and symbols
 swift/Sources/sky-render, SkyDemo                 command-line renderer, macOS demo
 docs/ARCHITECTURE.md  how it works

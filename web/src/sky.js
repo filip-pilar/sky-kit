@@ -1009,7 +1009,7 @@ export function createSky(container, options = {}) {
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
   // render the shape's live patch for this frame, and drop the shape once it has melted
-  function tendShape(paint = true) {
+  function tendShape(repaint = true) {
     if (!shape) return;
     const holdEnd = shape.t0 + shape.form + shape.hold, meltEnd = shapeEnd(shape);
     const next = shapeQueue[0];
@@ -1028,7 +1028,7 @@ export function createSky(container, options = {}) {
       placeNext();
       if (!shape) return;
     }
-    if (paint) paintPatch();
+    if (repaint) paintPatch();
   }
   // a shape that isn't queued takes over from the one on screen without a jump: if that one is holding, it turns
   // straight into the new one now; while it is still forming, as soon as it has formed; while it is melting, the

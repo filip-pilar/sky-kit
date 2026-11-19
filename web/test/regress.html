@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>sky-kit regression scenes</title>
+<style>body{margin:0} .box{position:relative}</style>
+</head>
+<body>
+<pre id="out">running…</pre>
+<script type="module">
+// Renders the scenes in ?scenes=<JSON> (see scripts/regress.ts) and prints "name dataURL" lines into #out.
+import { createSky } from '../src/sky.js';
+const HEART = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="100" height="92" viewBox="0 0 100 92"><path d="M50 90C20 66 2 48 2 28 2 13 14 2 28 2c10 0 18 6 22 14C54 8 62 2 72 2c14 0 26 11 26 26 0 20-18 38-48 62z" fill="#000"/></svg>');
+const scenes = JSON.parse(new URLSearchParams(location.search).get('scenes'));
+const lines = [];
+for (const s of scenes) {
+  const box = document.createElement('div'); box.className = 'box';
+  box.style.width = (s.width ?? 1600) / 2 + 'px'; box.style.height = (s.height ?? 1000) / 2 + 'px';
+  document.body.append(box);
+  const options = {};
+  for (const k of ['seed', 'coverage', 'palette', 'direction', 'gradient']) if (s[k] !== undefined) options[k] = s[k];
+  const sky = createSky(box, options);
+  sky.pause();
+  await new Promise(r => { requestAnimationFrame(() => requestAnimationFrame(r)); setTimeout(r, 400); });
+  const shape = { form: s.form, hold: s.holdForever ? Infinity : s.hold, fade: s.fade, density: s.density };
+  if (s.plane) sky.flyPlane({ from: [0, 0.7], to: [1, 0.75] });
+  if (s.words) s.words.forEach((text, i) => sky.showShape({ text, ...shape, queue: i > 0, pause: s.pause }));
+  if (s.symbol) sky.showShape({ symbol: s.symbol, ...shape, size: s.size });
+  if (s.heart) sky.showShape({ image: HEART, ...shape, size: 0.36 });
+  if (s.words || s.symbol || s.heart) await new Promise(r => setTimeout(r, 1200));   // let the shape images build
+  if (s.releaseAt != null) { sky._step(s.releaseAt); sky.releaseShape(); sky._step(s.seconds - s.releaseAt); }
+  else sky._step(s.seconds);
+  lines.push(s.name + ' ' + sky.snapshot());
+  sky.destroy(); box.remove();
+}
+document.getElementById('out').textContent = lines.join('\n');
+</script>
+</body>
+</html>

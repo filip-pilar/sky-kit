@@ -7,14 +7,19 @@ import AppKit
 import UIKit
 #endif
 
-/// What a cloud shape is made from.
-public enum SkyShapeSource {
+/// What a cloud shape is made from. (Sendable: a CGImage is immutable.)
+public enum SkyShapeSource: @unchecked Sendable {
     /// Text or emoji, drawn in a rounded bold system font.
     case text(String)
     /// A silhouette image: transparent images use their alpha, opaque ones use dark = shape.
     case image(CGImage)
     /// One of the built-in symbols (a heart, a star, …).
     case symbol(SkySymbol)
+
+    /// What shapeState calls it: the text, the symbol's name, or "image".
+    var label: String {
+        switch self { case .text(let t): return t; case .symbol(let s): return s.rawValue; case .image: return "image" }
+    }
 }
 
 /// What the shapes are doing (SkyRenderer.shapeState / SkyController.shapeState).

@@ -6,15 +6,32 @@
   "license": "MIT",
   "type": "module",
   "exports": {
-    ".": { "types": "./src/sky.d.ts", "default": "./src/sky.js" },
-    "./react": { "types": "./src/react.d.ts", "default": "./src/react.js" }
+    ".": {
+      "types": "./src/sky.d.ts",
+      "default": "./src/sky.js"
+    },
+    "./react": {
+      "types": "./src/react.d.ts",
+      "default": "./src/react.js"
+    }
   },
-  "files": ["src"],
+  "files": [
+    "src"
+  ],
   "sideEffects": false,
-  "peerDependencies": { "react": ">=17" },
-  "peerDependenciesMeta": { "react": { "optional": true } },
+  "peerDependencies": {
+    "react": ">=17"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
   "scripts": {
-    "serve": "python3 -m http.server 5173",
-    "check": "node --check src/sky.js && node --check src/react.js"
+    "lint": "oxlint src",
+    "check": "node --check src/sky.js && node --check src/react.js && oxlint src"
+  },
+  "devDependencies": {
+    "oxlint": "1.94.0"
   }
 }

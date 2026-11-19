@@ -406,9 +406,14 @@ public final class SkyRenderer {
     @discardableResult
     public func showShape(_ source: SkyShapeSource, x: Double = 0.5, y: Double = 0.6, size: Double = 0.32,
                           form: Double = 5, hold: Double = 5, fade: Double = 7, density: Double = 0.5, queue: Bool = false, pause: Double = 1) -> Bool {
-        guard let mask = ShapeMask.make(source), mask.silhouetteArea >= 1 else { return false }   // (a blank text or image: nothing to form)
-        var label: String? = nil
-        switch source { case .text(let t): label = t; case .symbol(let s): label = s.rawValue; case .image: label = "image" }
+        guard let mask = ShapeMask.make(source) else { return false }
+        return show(mask, label: source.label, x: x, y: y, size: size, form: form, hold: hold, fade: fade, density: density, queue: queue, pause: pause)
+    }
+    /// showShape with the mask already built (SkyController builds it off the main thread).
+    @discardableResult
+    func show(_ mask: ShapeMask, label: String, x: Double, y: Double, size: Double,
+              form: Double, hold: Double, fade: Double, density: Double, queue: Bool, pause: Double) -> Bool {
+        guard mask.silhouetteArea >= 1 else { return false }   // (a blank text or image: nothing to form)
         let p = PendingShape(mask: mask, x: x, y: y, size: size, form: form, hold: hold, fade: fade, density: min(1, max(0, density)), pause: max(0, pause), label: label)
         if queue && (shape != nil || pendingShape != nil || !shapeQueue.isEmpty) { shapeQueue.append(p); return true }
         shapeQueue.removeAll()
