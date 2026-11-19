@@ -5,3 +5,4 @@ node_modules/
 *.xcodeproj/xcuserdata/
 swift/out/
 .regress/
+demo/sky-kit-demo.html

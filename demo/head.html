@@ -1,0 +1,192 @@
+<title>sky-kit</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="description" content="Live demo of sky-kit: endless drifting painterly clouds that turn into words and symbols. Copy the code for the web (one ES module, WebGL2) or Swift (Metal, SwiftUI). Source: https://github.com/filip-pilar/sky-kit">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Nunito:wght@600;700;800&display=swap">
+<style>
+/* Layout: the live sky fills the screen; a name chip floats top left, and one glass dock at the bottom holds the
+   shape controls and opens into Shape / Sky / Code settings. One bright summer look (the sky never goes dark). */
+:root {
+  --sky: #5fb0f4;
+  --glass: rgba(10, 34, 80, 0.5);
+  --glass-deep: rgba(6, 22, 54, 0.74);
+  --edge: rgba(255, 255, 255, 0.3);
+  --ink: #ffffff;
+  --ink-soft: rgba(255, 255, 255, 0.8);
+  --chip: rgba(255, 255, 255, 0.16);
+  --chip-on: rgba(255, 255, 255, 0.36);
+  --font-ui: "Nunito", ui-rounded, "SF Pro Rounded", system-ui, sans-serif;
+  --font-code: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+html, body { height: 100%; }
+body { background: var(--sky); color: var(--ink); font: 600 15px var(--font-ui); overflow: hidden; -webkit-tap-highlight-color: transparent; }
+#sky { position: fixed; inset: 0; touch-action: none; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
+.glass { background: var(--glass); border: 1px solid var(--edge); backdrop-filter: blur(14px) saturate(1.2); -webkit-backdrop-filter: blur(14px) saturate(1.2); }
+
+/* top: name chip and the hide button */
+.top {
+  position: fixed; z-index: 3; left: 0; right: 0; top: 0; display: flex; justify-content: space-between; align-items: flex-start; gap: 8px;
+  padding-top: calc(12px + env(safe-area-inset-top, 0px));
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  pointer-events: none;
+}
+.top > * { pointer-events: auto; }
+.name { border-radius: 16px; padding: 8px 12px; display: grid; gap: 1px; min-width: 0; }
+.name b { font: 800 17px var(--font-ui); letter-spacing: 0.01em; }
+.name span { font: 600 12px var(--font-ui); color: var(--ink-soft); }
+.name a { color: var(--ink); font: 700 12px var(--font-ui); text-underline-offset: 3px; }
+
+/* bottom dock */
+.dock {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 2; display: flex; justify-content: center; pointer-events: none;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 0 calc(14px + env(safe-area-inset-bottom, 0px));
+}
+.panel { pointer-events: auto; width: 100%; max-width: 560px; border-radius: 22px; padding: 12px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+.row { display: flex; gap: 8px; align-items: center; }
+.row > * { min-width: 0; }
+input[type=text] {
+  flex: 1 1 0; width: 0; font: 700 16px var(--font-ui); color: var(--ink);
+  background: var(--chip); border: 1px solid var(--edge); border-radius: 14px; padding: 10px 12px; outline: none;
+}
+input[type=text]::placeholder { color: var(--ink-soft); }
+input[type=text]:focus-visible { border-color: var(--ink); }
+button {
+  font: 800 15px var(--font-ui); color: var(--ink); background: var(--chip);
+  border: 1px solid var(--edge); border-radius: 14px; padding: 10px 14px; cursor: pointer; flex: none;
+}
+button.primary { background: var(--chip-on); }
+button[aria-pressed=true], button[aria-selected=true], button[aria-expanded=true].gear { background: var(--chip-on); }
+button:disabled { opacity: 0.45; cursor: default; }
+button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+button:active { transform: scale(0.97); }
+.gear { padding: 10px 12px; }
+.gear svg, .icon svg { width: 18px; height: 18px; display: block; }
+.symbols { display: flex; gap: 6px; }
+.symbols button { flex: 1 1 0; min-width: 0; padding: 8px 0; display: grid; place-items: center; }
+.symbols svg { width: 22px; height: 22px; display: block; }
+.now { display: flex; align-items: center; justify-content: space-between; gap: 8px; font: 700 13px var(--font-ui); min-height: 20px; }
+.now span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.check { display: flex; align-items: center; gap: 6px; color: var(--ink-soft); font: 700 13px var(--font-ui); flex: none; cursor: pointer; }
+.check input { accent-color: #ffffff; width: 16px; height: 16px; margin: 0; }
+
+/* settings sheet */
+.sheet { display: grid; gap: 10px; max-height: min(46vh, 420px); overflow-y: auto; overscroll-behavior: contain; padding-right: 2px; }
+.sheet[hidden] { display: none !important; }
+.tabs { display: flex; gap: 4px; background: var(--chip); border-radius: 12px; padding: 3px; }
+.tabs button { flex: 1; border: 0; background: transparent; border-radius: 9px; padding: 6px 10px; font-size: 13px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px 14px; }
+.slider { display: flex; align-items: center; gap: 8px; color: var(--ink-soft); font: 700 13px var(--font-ui); letter-spacing: 0.02em; min-width: 0; }
+.slider input { flex: 1; min-width: 0; width: 100%; accent-color: #ffffff; }
+.slider span { flex: 0 0 58px; }
+.slider output { flex: 0 0 46px; text-align: right; color: var(--ink); font-variant-numeric: tabular-nums; }
+.seg { display: flex; gap: 4px; background: var(--chip); border-radius: 12px; padding: 3px; }
+.seg button { flex: 1; border: 0; background: transparent; border-radius: 9px; padding: 6px 8px; font-size: 13px; }
+.label { color: var(--ink-soft); font: 700 12px var(--font-ui); letter-spacing: 0.04em; text-transform: uppercase; }
+.field { display: grid; gap: 4px; min-width: 0; }
+.colors { display: flex; gap: 4px; background: var(--chip); border-radius: 12px; padding: 3px; }
+.colors label { flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 3px 6px; border-radius: 9px; font-size: 13px; cursor: pointer; min-width: 0; }
+.colors input { flex: none; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 50%; background: none; cursor: pointer; }
+.colors input::-webkit-color-swatch-wrapper { padding: 0; }
+.colors input::-webkit-color-swatch { border: 2px solid rgba(255, 255, 255, 0.75); border-radius: 50%; }
+.colors input::-moz-color-swatch { border: 2px solid rgba(255, 255, 255, 0.75); border-radius: 50%; }
+.wrap { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.code { display: grid; gap: 6px; min-width: 0; }
+.code-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+pre {
+  margin: 0; background: var(--glass-deep); border: 1px solid var(--edge); border-radius: 12px; padding: 10px 12px;
+  font: 500 12.5px/1.5 var(--font-code); color: var(--ink); overflow-x: auto; white-space: pre; tab-size: 2;
+}
+.small { padding: 6px 10px; font-size: 13px; border-radius: 10px; }
+.hint { color: var(--ink-soft); font: 600 13px/1.45 var(--font-ui); }
+.hint a { color: var(--ink); }
+.status { font: 700 13px var(--font-ui); text-align: center; background: rgba(140, 20, 40, 0.55); border-radius: 10px; padding: 6px 10px; }
+
+/* bare: only the sky, and a button to bring the controls back */
+body.bare .dock, body.bare .name { display: none; }
+.err { position: fixed; inset: auto 16px 50% 16px; text-align: center; font: 800 16px var(--font-ui); }
+@media (max-width: 480px) { .grid { grid-template-columns: 1fr; } .name span { display: none; } }
+@media (max-width: 400px) { .wide { display: none; } }
+@media (prefers-reduced-motion: reduce) { button:active { transform: none; } }
+</style>
+
+<div id="sky" role="img" aria-label="A bright blue sky with drifting clouds; one of them turns into the words or symbol you choose"></div>
+
+<article class="sr-only" id="about" aria-label="About this page">
+  <h1>sky-kit</h1>
+  <p>Endless drifting painterly clouds on a bright blue sky. A real cloud near the chosen spot reshapes into a word, emoji or symbol, holds it, then melts back into itself. This page is a live demo; its Code tab gives the code for the settings you pick.</p>
+  <p>Source and docs: https://github.com/filip-pilar/sky-kit (MIT). Agents: read README.md there first, then AGENTS.md for working on the code.</p>
+  <p>Web: one ES module with no dependencies and no build step, WebGL2. Import https://cdn.jsdelivr.net/gh/filip-pilar/sky-kit@v0.3.2/web/src/sky.js or copy web/src/sky.js. createSky(container, options) returns set, pause, play, flyPlane, showShape, releaseShape, clearShape, shapeState, snapshot, destroy. React: web/src/react.js.</p>
+  <p>Swift (iOS 16+, macOS 13+): .package(url: "https://github.com/filip-pilar/sky-kit", from: "0.3.2"), then SkyView(options, controller: SkyController()).</p>
+  <p>Tapping the sky forms the words on the tapped cloud; up to three shapes are up at once (showShape's id option). Links to this page can carry words: the address ending #happy-birthday--sam forms "happy birthday", then "sam".</p>
+</article>
+
+<div class="top">
+  <div class="name glass"><b>sky-kit</b><span>drifting clouds for the web and Swift</span><a href="https://github.com/filip-pilar/sky-kit" target="_blank" rel="noopener">Code on GitHub ↗</a></div>
+  <button class="glass icon" id="bareBtn" aria-pressed="false" title="Only the sky (H)"><span id="bareText">Hide</span></button>
+</div>
+
+<div class="dock">
+  <div class="panel glass" id="panel">
+    <div class="sheet" id="sheet" hidden>
+      <div class="tabs" role="tablist" aria-label="Settings">
+        <button role="tab" id="tabShape" aria-selected="true" aria-controls="paneShape">Shape</button>
+        <button role="tab" id="tabSky" aria-selected="false" aria-controls="paneSky">Sky</button>
+        <button role="tab" id="tabCode" aria-selected="false" aria-controls="paneCode">Code</button>
+      </div>
+      <div class="grid" id="paneShape" role="tabpanel" aria-labelledby="tabShape">
+        <label class="slider" for="sForm"><span>Form</span><input type="range" id="sForm" min="1" max="15" step="0.5" value="5"><output for="sForm"></output></label>
+        <label class="slider" for="sHold"><span>Hold</span><input type="range" id="sHold" min="0" max="21" step="0.5" value="5"><output for="sHold"></output></label>
+        <label class="slider" for="sFade"><span>Melt</span><input type="range" id="sFade" min="1" max="15" step="0.5" value="7"><output for="sFade"></output></label>
+        <label class="slider" for="sPause"><span>Pause</span><input type="range" id="sPause" min="0" max="5" step="0.5" value="1"><output for="sPause"></output></label>
+        <label class="slider" for="sDensity"><span>Density</span><input type="range" id="sDensity" min="0" max="1" step="0.05" value="0.5"><output for="sDensity"></output></label>
+        <label class="slider" for="sSize"><span>Size</span><input type="range" id="sSize" min="0.15" max="0.5" step="0.01" value="0.32"><output for="sSize"></output></label>
+        <p class="hint">Tap clouds to form the words (or the last symbol) on them, up to three at once. Commas chain words: each forms on the same cloud after the last melts. Pause 0 turns one word straight into the next. Hold ∞ keeps it until Melt now.</p>
+      </div>
+      <div class="grid" id="paneSky" role="tabpanel" aria-labelledby="tabSky" hidden>
+        <label class="slider" for="sCoverage"><span>Clouds</span><input type="range" id="sCoverage" min="0" max="1" step="0.01" value="0.6"><output for="sCoverage"></output></label>
+        <label class="slider" for="sSpeed"><span>Speed</span><input type="range" id="sSpeed" min="0" max="4" step="0.05" value="1"><output for="sSpeed"></output></label>
+        <label class="slider" for="sGradient"><span>Horizon</span><input type="range" id="sGradient" min="0" max="1" step="0.01" value="0"><output for="sGradient"></output></label>
+        <label class="slider" for="sShadow"><span>Shading</span><input type="range" id="sShadow" min="0" max="1" step="0.01" value="0.3"><output for="sShadow"></output></label>
+        <div class="field"><span class="label" id="palLabel">Palette</span>
+          <div class="seg" role="group" aria-labelledby="palLabel" id="palette">
+            <button data-v="summer" aria-pressed="true">Summer</button><button data-v="day" aria-pressed="false">Day</button><button data-v="pastel" aria-pressed="false">Pastel</button>
+          </div></div>
+        <div class="field"><span class="label" id="colLabel">Colours</span>
+          <div class="colors" role="group" aria-labelledby="colLabel" id="colors">
+            <label><input type="color" id="cTop" aria-label="Sky colour at the top"> Top</label><label><input type="color" id="cMid" aria-label="Sky colour in the middle"> Middle</label><label><input type="color" id="cLow" aria-label="Sky colour at the bottom"> Bottom</label>
+          </div></div>
+        <div class="field"><span class="label" id="windLabel">Wind</span>
+          <div class="seg" role="group" aria-labelledby="windLabel" id="wind">
+            <button data-v="left" aria-pressed="true" aria-label="Drift to the left">← Left</button><button data-v="right" aria-pressed="false" aria-label="Drift to the right">Right →</button>
+          </div></div>
+        <div class="wrap">
+          <label class="check" for="planes"><input type="checkbox" id="planes" checked> Planes now and then</label>
+          <button class="small" id="planeBtn">✈ Send one</button>
+          <button class="small" id="seedBtn">New sky</button>
+        </div>
+      </div>
+      <div class="code" id="paneCode" role="tabpanel" aria-labelledby="tabCode" hidden>
+        <div class="code-head"><span class="label">Web: one module, no build</span><button class="small" id="copyWeb">Copy</button></div>
+        <pre id="codeWeb" tabindex="0" aria-label="Web code for these settings"></pre>
+        <div class="code-head"><span class="label">Swift: iOS 16+, macOS 13+</span><button class="small" id="copySwift">Copy</button></div>
+        <pre id="codeSwift" tabindex="0" aria-label="Swift code for these settings"></pre>
+        <p class="hint">The code follows your settings. Docs, React and every option: <a href="https://github.com/filip-pilar/sky-kit#readme" target="_blank" rel="noopener">README on GitHub</a>. Coding agents can read that link and do the rest.</p>
+      </div>
+    </div>
+    <div class="row">
+      <input type="text" id="words" value="hello" maxlength="60" autocomplete="off" aria-label="Words to form in the clouds, separated by commas" placeholder="Words, separated by commas">
+      <button class="primary" id="formBtn">Form</button>
+      <button id="meltBtn" title="Melt back into the cloud now">Melt<span class="wide"> now</span></button>
+      <button class="gear" id="gearBtn" aria-expanded="false" aria-controls="sheet" aria-label="Settings" title="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg></button>
+    </div>
+    <div class="symbols" id="symbols" role="group" aria-label="Form a symbol in the clouds"></div>
+    <div class="now"><span id="state" aria-live="polite">Starting</span>
+      <label class="check" for="loop"><input type="checkbox" id="loop"> Loop</label></div>
+    <div class="status" id="status" hidden></div>
+  </div>
+</div>
+
+<script type="module">

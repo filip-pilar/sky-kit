@@ -194,6 +194,7 @@ web/src/sky.js         the web component (GLSL shaders in CLOUD_FS, COMPOSITE_FS
 web/src/react.js       React wrapper; *.d.ts are the typed API
 web/examples/          index (several sizes), playground (every option), react
 web/test/              regression scenes and behaviour checks, run by scripts/regress.ts
+demo/                  the live demo's page: head.html + web/src/sky.js + tail.html (bun run demo builds it)
 swift/Sources/SkyKit   SkyView, SkyController, SkyRenderer, SkyOptions, Metal shaders, shape masks, symbols
 swift/Sources/         sky-render (CLI), SkyDemo (macOS app); swift/Tests/ the two tests the scenes can't cover
 docs/ARCHITECTURE.md   how it works and why it is cheap

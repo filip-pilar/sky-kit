@@ -1,11 +1,14 @@
 {
   "name": "sky-kit-repo",
   "private": true,
-  "workspaces": ["web"],
+  "workspaces": [
+    "web"
+  ],
   "scripts": {
     "check": "bun run --cwd web check && swift build && swift test",
     "regress:baseline": "bun scripts/regress.ts baseline",
     "regress": "bun scripts/regress.ts check",
-    "serve": "bun scripts/serve.ts"
+    "serve": "bun scripts/serve.ts",
+    "demo": "cat demo/head.html web/src/sky.js demo/tail.html > demo/sky-kit-demo.html"
   }
 }

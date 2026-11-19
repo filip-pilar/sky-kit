@@ -1,0 +1,211 @@
+
+// ---------- demo page ----------
+const $ = id => document.getElementById(id);
+const MODULE = 'https://cdn.jsdelivr.net/gh/filip-pilar/sky-kit@v0.3.2/web/src/sky.js';
+let sky;
+try {
+  sky = createSky($('sky'), { planes: true });
+} catch (e) {
+  document.body.insertAdjacentHTML('beforeend', '<div class="err">This page needs WebGL2, which this browser doesn\'t offer.</div>');
+  throw e;
+}
+const num = id => +$(id).value;
+const HOLD_FOREVER = 21;   // the Hold slider's last step: hold until Melt now
+const shapeOpts = () => ({ form: num('sForm'), hold: num('sHold') >= HOLD_FOREVER ? Infinity : num('sHold'), fade: num('sFade'), density: num('sDensity') });
+// Form and the symbol buttons use id a; taps go round b, c, a, ... so up to three shapes are up at once
+const IDS = ['a', 'b', 'c'];
+let tapNext = 1;
+let shown = { a: { words: ['hello'] } };   // what the code shows, per id: { words } or { symbol }, and `at` when a tap chose the spot
+let last = { words: true };               // what a tap forms: the words, or { symbol }
+
+// ---------- words, symbols, melt ----------
+let chain = [];   // the words being shown, for Loop
+const parseWords = s => s.split(',').map(w => w.trim()).filter(Boolean);
+const queueWords = (words, first, at, id = 'a') => words.forEach((text, i) =>
+  sky.showShape({ text, ...at, id, size: num('sSize'), ...shapeOpts(), queue: !(first && i === 0), pause: num('sPause') }));
+// a link carries its words: #happy-birthday--sam forms "happy birthday", then "sam" (letters and digits only;
+// claude.ai keeps a few names for itself)
+const RESERVED = /^(settings|sidebar|customize|upgrade|downloads|comment-.*)$/;
+const toHash = words => words.map(w => w.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')).filter(Boolean).join('--');
+const fromHash = h => h.split('--').map(w => w.replace(/-/g, ' ').trim()).filter(Boolean);
+function formWords(words, at, id = 'a') {
+  words = words.length ? words : ['☁'];
+  if (id === 'a') { chain = words; tapNext = 1; }
+  shown[id] = { words, at }; last = { words: true };
+  queueWords(words, true, at, id);   // the first takes over from whatever has this id, without a jump
+  const h = toHash(shown.a?.words ?? []);
+  if (h && !RESERVED.test(h) && location.hash !== '#' + h) { try { location.replace('#' + h); } catch { /* (some frames refuse; the words still form) */ } }
+  renderCode();
+}
+$('formBtn').onclick = () => formWords(parseWords($('words').value));
+$('words').addEventListener('keydown', e => { if (e.key === 'Enter') $('formBtn').click(); });
+$('meltBtn').onclick = () => { chain = []; shown = {}; tapNext = 0; sky.releaseShape(); renderCode(); };
+for (const name of Object.keys(SKY_SYMBOLS)) {
+  const b = document.createElement('button'), label = name[0].toUpperCase() + name.slice(1);
+  b.setAttribute('aria-label', label); b.title = label;
+  b.innerHTML = skySymbolSvg(name);
+  b.onclick = () => formSymbol(name);
+  $('symbols').append(b);
+}
+function formSymbol(name, at, id = 'a') {
+  if (id === 'a') { chain = []; tapNext = 1; }
+  shown[id] = { symbol: name, at }; last = { symbol: name };
+  sky.showShape({ symbol: name, ...at, id, size: num('sSize') * 1.3, ...shapeOpts() });
+  renderCode();
+}
+// tap the sky: the words (or the last symbol) form on the cloud you tap, each tap with the next id (up to
+// three shapes at once; a 4th tap turns the oldest into the new one)
+let press = null;
+$('sky').addEventListener('pointerdown', e => { press = { x: e.clientX, y: e.clientY, t: performance.now() }; });
+$('sky').addEventListener('pointerup', e => {
+  const p = press; press = null;
+  if (!p || Math.hypot(e.clientX - p.x, e.clientY - p.y) > 12 || performance.now() - p.t > 700) return;   // (a drag or a long press)
+  const r = $('sky').getBoundingClientRect();
+  const at = { x: +((e.clientX - r.left) / r.width).toFixed(3), y: +(1 - (e.clientY - r.top) / r.height).toFixed(3) };
+  const id = IDS[tapNext]; tapNext = (tapNext + 1) % IDS.length;
+  if (last.symbol) formSymbol(last.symbol, at, id); else formWords(parseWords($('words').value), at, id);
+});
+
+// ---------- what's happening, Loop ----------
+const PHASE = { waiting: 'Starting', forming: 'Forming', holding: 'Holding', melting: 'Melting back' };
+const quote = s => s === 'image' ? 'image' : '“' + s + '”';
+const still = window.matchMedia?.('(prefers-reduced-motion: reduce)');
+setInterval(() => {
+  const st = sky.shapeStates.a;
+  if ($('loop').checked && chain.length && st && st.next.length === 0 && (st.phase === 'forming' || st.phase === 'holding' || st.phase === 'melting'))
+    queueWords(chain, false);
+  const all = IDS.map(id => sky.shapeStates[id]).filter(Boolean);
+  const say = s => `${PHASE[s.phase]}${s.label ? ' ' + quote(s.label) : ''}${s.next.length ? ' · next: ' + s.next.map(quote).join(', ') : ''}`;
+  $('state').textContent = still?.matches && sky.options.respectReducedMotion ? 'Your device asks for less motion, so the sky holds still'
+    : all.length ? all.map(say).join('  ·  ') : 'Type words or pick a symbol, then tap a cloud';
+  $('meltBtn').disabled = !all.length;
+}, 250);
+
+// ---------- settings ----------
+const fmt = { sForm: v => v + ' s', sHold: v => v >= HOLD_FOREVER ? '∞' : v + ' s', sFade: v => v + ' s', sPause: v => v === 0 ? 'morph' : v + ' s',
+              sDensity: v => Math.round(v * 100) + '%', sSize: v => Math.round(v * 100) + '%',
+              sCoverage: v => Math.round(v * 100) + '%', sSpeed: v => v + '×', sGradient: v => Math.round(v * 100) + '%', sShadow: v => Math.round(v * 100) + '%' };
+const SKY_SLIDERS = { sCoverage: 'coverage', sSpeed: 'speed', sGradient: 'gradient', sShadow: 'shadow' };
+for (const [id, f] of Object.entries(fmt)) {
+  const show = () => { $(id).nextElementSibling.textContent = f(num(id)); };
+  $(id).addEventListener('input', () => { show(); if (SKY_SLIDERS[id]) sky.set({ [SKY_SLIDERS[id]]: num(id) }); renderCode(); });
+  show();
+}
+const segment = (id, key) => {
+  for (const b of $(id).querySelectorAll('button')) b.onclick = () => {
+    for (const o of $(id).querySelectorAll('button')) o.setAttribute('aria-pressed', String(o === b));
+    sky.set({ [key]: b.dataset.v }); renderCode();
+  };
+};
+segment('palette', 'palette'); segment('wind', 'direction');
+// your own sky colours: they override the palette (the swatches start as its colours); a palette button goes back to it
+const COLOURS = { cTop: 'skyTop', cMid: 'skyMid', cLow: 'skyLow' };
+const showPalette = p => { for (const [id, k] of Object.entries(COLOURS)) $(id).value = PALETTES[p][k]; };
+let colourFrame = 0;
+for (const id of Object.keys(COLOURS)) $(id).addEventListener('input', () => {
+  for (const o of $('palette').querySelectorAll('button')) o.setAttribute('aria-pressed', 'false');
+  cancelAnimationFrame(colourFrame);   // (a picker sends many values while dragging: repaint once a frame)
+  colourFrame = requestAnimationFrame(() => { sky.set(Object.fromEntries(Object.entries(COLOURS).map(([i, k]) => [k, $(i).value]))); renderCode(); });
+});
+for (const b of $('palette').querySelectorAll('button')) b.addEventListener('click', () => { sky.set({ skyTop: null, skyMid: null, skyLow: null }); showPalette(b.dataset.v); renderCode(); });
+showPalette(sky.options.palette);
+$('planes').onchange = e => { sky.set({ planes: e.target.checked }); renderCode(); };
+$('planeBtn').onclick = () => sky.flyPlane();
+$('seedBtn').onclick = () => { sky.set({ seed: Math.floor(Math.random() * 1000) }); renderCode(); };
+// the sheet and its tabs
+const setSheet = open => { $('sheet').hidden = !open; $('gearBtn').setAttribute('aria-expanded', String(open)); };
+$('gearBtn').onclick = () => setSheet($('sheet').hidden);
+const TABS = [['tabShape', 'paneShape'], ['tabSky', 'paneSky'], ['tabCode', 'paneCode']];
+for (const [tab, pane] of TABS) $(tab).onclick = () => {
+  for (const [t, p] of TABS) { $(t).setAttribute('aria-selected', String(t === tab)); $(p).hidden = p !== pane; }
+};
+// only the sky
+const setBare = bare => { document.body.classList.toggle('bare', bare); $('bareBtn').setAttribute('aria-pressed', String(bare)); $('bareText').textContent = bare ? 'Controls' : 'Hide'; };
+$('bareBtn').onclick = () => setBare(!document.body.classList.contains('bare'));
+addEventListener('keydown', e => {
+  if (e.target.closest?.('input, textarea')) return;
+  if (e.key === 'Escape') { setSheet(false); setBare(false); }
+  if (e.key === 'h' || e.key === 'H') setBare(!document.body.classList.contains('bare'));
+});
+
+// ---------- code for these settings ----------
+const js = v => typeof v === 'string' ? `'${v.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'` : String(v);
+const sw = v => typeof v === 'string' ? JSON.stringify(v) : v === Infinity ? '.infinity' : String(v);
+function skyOptions() {
+  const o = sky.options, d = SKY_DEFAULTS, out = [];
+  // (in SkyOptions' parameter order, which Swift requires; your own colours replace the palette)
+  for (const k of ['speed', 'coverage', 'shadow', 'direction', 'seed', 'palette', 'colors', 'gradient', 'planes']) {
+    if (k === 'colors') { if (o.skyTop) out.push([k, [o.skyTop, o.skyMid, o.skyLow]]); }
+    else if (o[k] !== d[k] && !(k === 'palette' && o.skyTop)) out.push([k, o[k]]);
+  }
+  return out;
+}
+function shapeArgs(shown) {
+  const a = shown.at ? [['x', shown.at.x], ['y', shown.at.y]] : [], o = shapeOpts(), size = num('sSize') * (shown.symbol ? 1.3 : 1);
+  if (Math.abs(size - 0.32) > 1e-9) a.push(['size', +size.toFixed(3)]);
+  for (const [k, def] of [['form', 5], ['hold', 5], ['fade', 7], ['density', 0.5]]) if (o[k] !== def) a.push([k, o[k]]);
+  return a;
+}
+function renderCode() {
+  const opts = skyOptions(), pause = num('sPause'), ids = IDS.filter(id => shown[id]), many = ids.length > 1;
+  const jsOpts = opts.length ? `{ ${opts.map(([k, v]) => k === 'colors' ? `skyTop: ${js(v[0])}, skyMid: ${js(v[1])}, skyLow: ${js(v[2])}` : `${k}: ${js(v)}`).join(', ')} }` : '';
+  // each id's shapes (the id only when there are several)
+  const jsShapes = ids.flatMap(id => {
+    const sh = shown[id], args = [...(many ? [['id', id]] : []), ...shapeArgs(sh)], jsArgs = args.map(([k, v]) => `, ${k}: ${js(v)}`).join('');
+    return sh.symbol ? [`sky.showShape({ symbol: ${js(sh.symbol)}${jsArgs} });`]
+      : sh.words.map((w, i) => `sky.showShape({ text: ${js(w)}${jsArgs}${i ? `, queue: true${pause !== 1 ? `, pause: ${pause}` : ''}` : ''} });`);
+  });
+  $('codeWeb').textContent =
+`<div id="sky" style="height: 100vh"></div>
+<script type="module">
+  import { createSky } from '${MODULE}';
+
+  // the sky fills the container and sits behind anything inside it
+  const sky = createSky(document.querySelector('#sky')${jsOpts ? ', ' + jsOpts : ''});
+  ${jsShapes.join('\n  ')}
+</` + `script>`;
+  const swOpts = opts.map(([k, v]) => `${k}: ${k === 'direction' || k === 'palette' ? '.' + v : k === 'colors' ? `SkyColors(top: ${sw(v[0])}, mid: ${sw(v[1])}, low: ${sw(v[2])})` : sw(v)}`).join(', ');
+  // (Swift takes the arguments in their declared order: x, y, size, form, hold, fade, density, queue, pause, id)
+  const swShapes = ids.flatMap(id => {
+    const sh = shown[id], swArgs = shapeArgs(sh).map(([k, v]) => `, ${k}: ${sw(v)}`).join(''), swId = many ? `, id: ${sw(id)}` : '';
+    return sh.symbol ? [`sky.showShape(.symbol(.${sh.symbol})${swArgs}${swId})`]
+      : sh.words.map((w, i) => `sky.showShape(.text(${sw(w)})${swArgs}${i ? `, queue: true${pause !== 1 ? `, pause: ${pause}` : ''}` : ''}${swId})`);
+  });
+  $('codeSwift').textContent =
+`// Package.swift: .package(url: "https://github.com/filip-pilar/sky-kit", from: "0.3.2")
+import SkyKit
+import SwiftUI
+
+struct ContentView: View {
+    @StateObject private var sky = SkyController()
+
+    var body: some View {
+        SkyView(SkyOptions(${swOpts}), controller: sky)
+            .ignoresSafeArea()
+            .onAppear {
+                ${swShapes.join('\n                ')}
+            }
+    }
+}`;
+}
+const copy = (btn, pre) => btn.onclick = async () => {
+  try { await navigator.clipboard.writeText($(pre).textContent); btn.textContent = 'Copied'; }
+  catch { const r = document.createRange(); r.selectNodeContents($(pre)); getSelection().removeAllRanges(); getSelection().addRange(r); btn.textContent = 'Selected: press copy'; }
+  setTimeout(() => { btn.textContent = 'Copy'; }, 1800);
+};
+copy($('copyWeb'), 'codeWeb'); copy($('copySwift'), 'codeSwift');
+
+// ---------- start: the words in the link, or a hello ----------
+const start = fromHash(location.hash.slice(1));
+if (start.length) $('words').value = start.join(', ');
+renderCode();
+setTimeout(() => formWords(start.length ? start : ['hello']), 900);
+// if the sky isn't drawing, say why (shown only when something is wrong)
+setTimeout(() => {
+  const i = sky.info, el = $('status');
+  if (i.frames < 2 || i.contextLost || i.glError) {
+    el.hidden = false;
+    el.textContent = `The sky isn't drawing: frames ${i.frames}, context lost ${i.contextLost}, GL error ${i.glError}, size ${i.size.join('×')}`;
+  }
+}, 2500);
+</script>
