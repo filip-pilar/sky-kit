@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "Endless drifting painterly clouds for the web (WebGL2), with a React wrapper.",
+  "license": "MIT",
   "type": "module",
   "exports": {
     ".": { "types": "./src/sky.d.ts", "default": "./src/sky.js" },

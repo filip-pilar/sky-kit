@@ -138,4 +138,6 @@ swift/Sources/sky-render, SkyDemo                 command-line renderer, macOS d
 docs/ARCHITECTURE.md  how it works
 ```
 
-No licence has been chosen yet.
+## Licence
+
+MIT, see [LICENSE](LICENSE).
