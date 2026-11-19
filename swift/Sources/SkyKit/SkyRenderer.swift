@@ -75,9 +75,10 @@ public final class SkyRenderer {
     }
     private var planes: [Plane] = []
     private var nextPlane = 8.0
-    private var shape: Shape?
-    private var pendingShape: PendingShape?
-    private var shapeQueue: [PendingShape] = []   // shapes waiting to form once the current one has melted
+    /// A lane holds one shape at a time: the shape on screen, one waiting for the first frame, and the ones queued
+    /// after it (they form once it has melted).
+    private final class Lane { var shape: Shape?; var pending: PendingShape?; var queue: [PendingShape] = [] }
+    private var lanes = [Lane()]
 
     // GPU parameter blocks (all float4, so Swift and Metal layouts match)
     private struct GPUColors { var top: SIMD4<Float>, mid: SIMD4<Float>, low: SIMD4<Float> }
@@ -128,7 +129,7 @@ public final class SkyRenderer {
     }
 
     private func optionsChanged(from old: SkyOptions) {
-        if old.direction != options.direction { shape = nil; pendingShape = nil; shapeQueue.removeAll() }   // a placed shape belongs to the old drift
+        if old.direction != options.direction { for l in lanes { l.shape = nil; l.pending = nil; l.queue.removeAll() } }   // a placed shape belongs to the old drift
         if old.cloudScale != options.cloudScale || old.quality != options.quality { needsSetup = true }
         else if old.coverage != options.coverage || old.shadow != options.shadow || old.seed != options.seed
                     || old.direction != options.direction || old.palette != options.palette || old.colors != options.colors
@@ -185,19 +186,21 @@ public final class SkyRenderer {
         let v = min(max(x, 0), 1); return 0.5 * v + 0.5 * v * v * (3 - 2 * v)
     }
     /// Forming progress (stays 1 while holding and melting; a released shape keeps what it had reached).
-    private func shapeAmount(at t: Double) -> Double {
-        guard let s = shape, t > s.t0 else { return 0 }
+    private func shapeAmount(_ s: Shape?, at t: Double) -> Double {
+        guard let s, t > s.t0 else { return 0 }
         if let r = s.relAt, t >= r { return s.relAmt }
         return Self.ease((t - s.t0) / s.form)
     }
     /// Melting progress (a released shape melts from when it was released, over relDur).
-    private func shapeMelt(at t: Double) -> Double {
-        guard let s = shape else { return 0 }
+    private func shapeMelt(_ s: Shape?, at t: Double) -> Double {
+        guard let s else { return 0 }
         if let r = s.relAt, t >= r { return Self.ease((t - r) / s.relDur) }
         return Self.ease((t - s.t0 - s.form - s.hold) / s.fade)
     }
-    private func cloudParams(_ def: LayerDef, x0: Double, y0: Double, time: Double, targetHeight: Int, amount: Double, melt: Double = 0, upp: Double? = nil) -> CloudParams {
+    /// The cloud shader's parameters: a layer snapshot, or (with a shape, as it is at `time`) the live patch over it.
+    private func cloudParams(_ def: LayerDef, x0: Double, y0: Double, time: Double, targetHeight: Int, shape: Shape?, upp: Double? = nil) -> CloudParams {
         let seed = def.seed + SIMD2(options.seed * 7.31, options.seed * 3.17)
+        let amount = shapeAmount(shape, at: time), melt = shapeMelt(shape, at: time)
         return CloudParams(
             a: SIMD4(Float(x0), Float(y0), Float(upp ?? viewH / Double(cacheH)), Float(viewH)),
             b: SIMD4(Float(time * def.morph), Float(def.scale), Float(options.coverage), Float(options.shadow)),
@@ -221,7 +224,7 @@ public final class SkyRenderer {
             let x = cacheW * strip / def.strips, x2 = cacheW * (strip + 1) / def.strips
             enc.setScissorRect(MTLScissorRect(x: x, y: 0, width: max(1, x2 - x), height: cacheH))
         }
-        var p = cloudParams(def, x0: s.x0, y0: 0, time: s.time, targetHeight: cacheH, amount: 0)
+        var p = cloudParams(def, x0: s.x0, y0: 0, time: s.time, targetHeight: cacheH, shape: nil)
         enc.setFragmentBytes(&p, length: MemoryLayout<CloudParams>.stride, index: 0)
         enc.setFragmentTexture(emptyTexture, index: 0); enc.setFragmentTexture(emptyTexture, index: 1); enc.setFragmentTexture(emptyTexture, index: 2)
         enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
@@ -231,9 +234,9 @@ public final class SkyRenderer {
     /// as the snapshots) with the shape folded into the cloud density. Only the on-screen part is drawn.
     /// The patch is placed with the clouds every frame and changes slowly, so it is repainted at most
     /// 30 times per second of sky time.
-    private func paintPatch(_ cb: MTLCommandBuffer) {
-        guard let sh = shape else { return }
-        let amt = shapeAmount(at: simTime), melt = shapeMelt(at: simTime)
+    private func paintPatch(_ lane: Lane, _ cb: MTLCommandBuffer) {
+        guard let sh = lane.shape else { return }
+        let amt = shapeAmount(sh, at: simTime), melt = shapeMelt(sh, at: simTime)
         guard amt > 0, melt < 1, layers.count == 2 else { sh.patchReady = false; return }
         let every = amt >= 1 && melt <= 0 ? 1.0 / 15 : 1.0 / 30   // 15 while it only holds (see paintPatch in sky.js)
         if sh.patchReady && simTime - sh.patchTime < every * 0.8 { return }   // (frames come a little early or late)
@@ -263,7 +266,7 @@ public final class SkyRenderer {
         // Metal's viewport origin is the top-left: draw into the top-left w×h of the texture, with the shader's
         // y flip over the drawn height h (the composite samples it at (u, 1 - v) × patchUV)
         enc.setViewport(MTLViewport(originX: 0, originY: 0, width: Double(w), height: Double(h), znear: 0, zfar: 1))
-        var p = cloudParams(layers[1].def, x0: x0, y0: y0, time: simTime, targetHeight: h, amount: amt, melt: melt)
+        var p = cloudParams(layers[1].def, x0: x0, y0: y0, time: simTime, targetHeight: h, shape: sh)
         enc.setFragmentBytes(&p, length: MemoryLayout<CloudParams>.stride, index: 0)
         enc.setFragmentTexture(sh.texture, index: 0); enc.setFragmentTexture(sh.src ?? emptyTexture, index: 1)
         enc.setFragmentTexture(sh.prev?.texture ?? emptyTexture, index: 2)
@@ -276,7 +279,7 @@ public final class SkyRenderer {
     /// Repaint after a setting change or a resize: the two snapshots on screen now, the next one a strip per frame as
     /// usual (it is finished before it is needed), so the hitch is two thirds of a full repaint.
     private func rebuildAll(_ cb: MTLCommandBuffer) {
-        shape?.patchReady = false
+        for l in lanes { l.shape?.patchReady = false }
         for l in layers {
             let t0 = l.snaps[0].time
             for (k, s) in l.snaps.enumerated() {
@@ -303,25 +306,28 @@ public final class SkyRenderer {
     public func update(dt: Double, commandBuffer cb: MTLCommandBuffer) {
         if needsSetup { setup(); rebuildAll(cb); needsSetup = false; needsRebuild = false }
         if needsRebuild { rebuildAll(cb); needsRebuild = false }
-        if let p = pendingShape { pendingShape = nil; placeShape(p) }
+        for l in lanes { if let p = l.pending { l.pending = nil; placeShape(l, p) } }
         let sdt = max(0, min(dt, 0.1)) * effectiveSpeed
         simTime += sdt
         updatePlanes(sdt)
         for i in layers.indices { advance(i, cb) }
-        if let sh = shape {
-            // a shape that has drifted off screen with the clouds is done (nobody sees its cloud come back)
-            let r = sh.area, scroll = dir * layers[1].def.speed * simTime, vw = Double(width) / unit
-            let gone = simTime > sh.t0 && (dir > 0 ? r.x + r.z < scroll - 0.05 : r.x > scroll + vw + 0.05)
-            let amt = shapeAmount(at: simTime), melt = shapeMelt(at: simTime)
-            if sh.relAt == nil, var n = shapeQueue.first, n.pause <= 0,
-               (simTime > sh.holdEnd && melt < 0.15) || (n.asap && amt >= 1 && melt <= 0) {
-                // pause 0: the next shape takes over right away and this one's outline turns straight into it
-                shapeQueue.removeFirst(); n.from = sh; placeShape(n)
-            } else if simTime > sh.end || gone {
-                // melted back into its cloud: the next queued shape forms on the same cloud after its pause
-                shape = nil
-                if !shapeQueue.isEmpty { var n = shapeQueue.removeFirst(); n.near = sh.cloudAt; n.startAt = min(sh.end, simTime) + max(0, n.pause); placeShape(n) }
-            }
+        for l in lanes { tend(l) }
+    }
+    /// Turn a shape that has held into the next one (pause 0), or drop one that has melted and form the next queued one.
+    private func tend(_ lane: Lane) {
+        guard let sh = lane.shape else { return }
+        // a shape that has drifted off screen with the clouds is done (nobody sees its cloud come back)
+        let r = sh.area, scroll = dir * layers[1].def.speed * simTime, vw = Double(width) / unit
+        let gone = simTime > sh.t0 && (dir > 0 ? r.x + r.z < scroll - 0.05 : r.x > scroll + vw + 0.05)
+        let amt = shapeAmount(sh, at: simTime), melt = shapeMelt(sh, at: simTime)
+        if sh.relAt == nil, var n = lane.queue.first, n.pause <= 0,
+           (simTime > sh.holdEnd && melt < 0.15) || (n.asap && amt >= 1 && melt <= 0) {
+            // pause 0: the next shape takes over right away and this one's outline turns straight into it
+            lane.queue.removeFirst(); n.from = sh; placeShape(lane, n)
+        } else if simTime > sh.end || gone {
+            // melted back into its cloud: the next queued shape forms on the same cloud after its pause
+            lane.shape = nil
+            if !lane.queue.isEmpty { var n = lane.queue.removeFirst(); n.near = sh.cloudAt; n.startAt = min(sh.end, simTime) + max(0, n.pause); placeShape(lane, n) }
         }
     }
 
@@ -329,7 +335,7 @@ public final class SkyRenderer {
     public func draw(to target: MTLTexture, commandBuffer cb: MTLCommandBuffer) throws {
         guard layers.count == 2 else { return }
         let pipeline = try compositePipeline(for: target.pixelFormat)
-        paintPatch(cb)
+        for l in lanes { paintPatch(l, cb) }
         let rp = MTLRenderPassDescriptor()
         rp.colorAttachments[0].texture = target
         rp.colorAttachments[0].loadAction = .dontCare
@@ -343,6 +349,7 @@ public final class SkyRenderer {
                          Float(min(1, max(0, (simTime - l.snaps[0].time) / l.def.dt))))
         }
         var patch = SIMD4<Float>(0, 0, 1, 1), patch2 = SIMD4<Float>(0, 0, 0, 0)
+        let shape = lanes[0].shape
         if let sh = shape, sh.patchReady {
             let r = sh.patchRect, scroll = dir * layers[1].def.speed * simTime   // view-relative, subtracted in double precision
             patch = SIMD4(Float(r.x - scroll), Float(r.y), Float(r.z), Float(r.w))
@@ -428,47 +435,50 @@ public final class SkyRenderer {
         guard mask.silhouetteArea >= 1 else { return false }   // (a blank text or image: nothing to form)
         var p = PendingShape(mask: mask, x: x ?? 0.5, y: y ?? 0.6, size: size, form: form, hold: hold, fade: fade, density: min(1, max(0, density)), pause: max(0, pause), label: label)
         p.spot = x != nil || y != nil
-        if queue && (shape != nil || pendingShape != nil || !shapeQueue.isEmpty) { shapeQueue.append(p); return true }
-        shapeQueue.removeAll()
-        if layers.count == 2 { takeOver(p) } else { pendingShape = p }
+        let lane = lanes[0]
+        if queue && (lane.shape != nil || lane.pending != nil || !lane.queue.isEmpty) { lane.queue.append(p); return true }
+        lane.queue.removeAll()
+        if layers.count == 2 { takeOver(lane, p) } else { lane.pending = p }
         return true
     }
     /// A shape that isn't queued takes over from the one on screen without a jump: if that one is holding, it turns
     /// straight into the new one now; while it is still forming, as soon as it has formed; while it is melting, the
     /// new one forms right after it.
-    private func takeOver(_ p: PendingShape) {
-        if let sh = shape {
-            let amt = shapeAmount(at: simTime), melt = shapeMelt(at: simTime)
+    private func takeOver(_ lane: Lane, _ p: PendingShape) {
+        if let sh = lane.shape {
+            let amt = shapeAmount(sh, at: simTime), melt = shapeMelt(sh, at: simTime)
             if amt > 0 && melt < 1 {
                 var n = p
-                if amt >= 1 && melt <= 0 { n.from = sh; placeShape(n) } else { n.pause = 0; n.asap = amt < 1; shapeQueue.insert(n, at: 0) }
+                if amt >= 1 && melt <= 0 { n.from = sh; placeShape(lane, n) } else { n.pause = 0; n.asap = amt < 1; lane.queue.insert(n, at: 0) }
                 return
             }
         }
-        placeShape(p)
+        placeShape(lane, p)
     }
-    public func clearShape() { shape = nil; pendingShape = nil; shapeQueue.removeAll() }
+    public func clearShape() { for l in lanes { l.shape = nil; l.pending = nil; l.queue.removeAll() } }
     /// Melt the shape on screen back into its cloud now, from wherever it is (forming, holding, turning into the
     /// next one), and drop the shapes waiting after it. Unlike clearShape, nothing jumps.
     public func releaseShape() {
-        shapeQueue.removeAll(); pendingShape = nil
-        guard let sh = shape else { return }
-        let amt = shapeAmount(at: simTime), melt = shapeMelt(at: simTime)
-        if amt <= 0 { shape = nil; return }                       // hadn't started yet: nothing to see
-        if melt > 0 || sh.relAt != nil { return }                 // already melting
-        sh.relAt = simTime; sh.relAmt = amt
-        sh.relDur = sh.fade * (sh.prev != nil ? 1 : max(0.3, amt))   // a barely formed shape goes quicker
+        for l in lanes {
+            l.queue.removeAll(); l.pending = nil
+            guard let sh = l.shape else { continue }
+            let amt = shapeAmount(sh, at: simTime), melt = shapeMelt(sh, at: simTime)
+            if amt <= 0 { l.shape = nil; continue }                   // hadn't started yet: nothing to see
+            if melt > 0 || sh.relAt != nil { continue }               // already melting
+            sh.relAt = simTime; sh.relAmt = amt
+            sh.relDur = sh.fade * (sh.prev != nil ? 1 : max(0.3, amt))   // a barely formed shape goes quicker
+        }
     }
     /// What the shapes are doing: the phase, the text or symbol on screen, and the ones queued after it.
     public var shapeState: SkyShapeState {
-        let next = shapeQueue.map { $0.label ?? "image" }
-        guard let sh = shape else { return SkyShapeState(phase: next.isEmpty && pendingShape == nil ? .none : .waiting, label: nil, next: next) }
-        let amt = shapeAmount(at: simTime), melt = shapeMelt(at: simTime)
+        let lane = lanes[0], next = lane.queue.map { $0.label ?? "image" }
+        guard let sh = lane.shape else { return SkyShapeState(phase: next.isEmpty && lane.pending == nil ? .none : .waiting, label: nil, next: next) }
+        let amt = shapeAmount(sh, at: simTime), melt = shapeMelt(sh, at: simTime)
         let phase: SkyShapeState.Phase = amt <= 0 ? .waiting : melt > 0 ? .melting : amt < 1 ? .forming : .holding
         return SkyShapeState(phase: phase, label: sh.label, next: next)
     }
 
-    private func placeShape(_ p: PendingShape) {
+    private func placeShape(_ lane: Lane, _ p: PendingShape) {
         let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: p.mask.width, height: p.mask.height, mipmapped: false)
         d.usage = [.shaderRead]
         guard let tex = device.makeTexture(descriptor: d) else { return }
@@ -514,7 +524,7 @@ public final class SkyRenderer {
             sh.src = found?.src; sh.srcRect = found?.srcRect ?? SIMD4(0, 0, 1, 1)
             sh.cloudAt = found?.centre ?? SIMD2(cx, cy)
         }
-        shape = sh
+        lane.shape = sh
     }
 
     /// The cloud to put a shape on (findCloud), from a map of the near clouds over x0…x1 (all that is on screen
@@ -535,7 +545,7 @@ public final class SkyRenderer {
             rp.colorAttachments[0].texture = tex; rp.colorAttachments[0].loadAction = .dontCare; rp.colorAttachments[0].storeAction = .store
             guard let enc = cb.makeRenderCommandEncoder(descriptor: rp) else { return nil }
             enc.setRenderPipelineState(cloudPipeline)
-            var p = cloudParams(layers[1].def, x0: x0, y0: y0, time: t, targetHeight: gh, amount: 0, upp: step)
+            var p = cloudParams(layers[1].def, x0: x0, y0: y0, time: t, targetHeight: gh, shape: nil, upp: step)
             enc.setFragmentBytes(&p, length: MemoryLayout<CloudParams>.stride, index: 0)
             enc.setFragmentTexture(emptyTexture, index: 0); enc.setFragmentTexture(emptyTexture, index: 1); enc.setFragmentTexture(emptyTexture, index: 2)
             enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
