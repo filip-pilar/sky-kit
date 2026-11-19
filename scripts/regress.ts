@@ -6,9 +6,10 @@
 // Swift scenes are rendered with sky-render, web scenes with headless Chrome (web/test/regress.html), into
 // .regress/<baseline|current>/<swift|web>. Rendering is deterministic on one machine, so a pure refactor should
 // give identical images; a Metal or GLSL compiler can still round a reordered expression differently (±1–2).
+// `check` also compares the two ports with each other on every scene without text (see PARITY below).
 // Needs macOS (Metal) and Google Chrome (set CHROME to use another Chromium).
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 type Scene = {
@@ -135,5 +136,23 @@ if (mode === 'check') {
     process.stdout.write(r.stdout);
     if (r.status !== 0) failed = true;
   }
-  process.exit(failed ? 1 : 0);
+  // PARITY: Swift against web on every scene without text (the browser and CoreText draw the font differently).
+  // They match closely (mean 0.02–0.23/255, max 8–27 now). A scene fails when the ports are further apart than in
+  // the baseline (mean up by more than 0.01: one port changed and not the other), or beyond the absolute limits.
+  const PARITY = { mean: 0.5, max: 48, drift: 0.01 };
+  const parity = (from: string) => {
+    const dir = join(root, '.regress', 'parity');
+    rmSync(dir, { recursive: true, force: true });
+    for (const port of ['swift', 'web']) mkdirSync(join(dir, port), { recursive: true });
+    for (const s of SCENES.filter(s => !s.words)) for (const port of ['swift', 'web']) copyFileSync(join(from, port, s.name + '.png'), join(dir, port, s.name + '.png'));
+    const r = spawnSync(skyRender, ['--compare', join(dir, 'swift'), join(dir, 'web'), '--tolerance', '255'], { encoding: 'utf8' });
+    return new Map(r.stdout.split('\n').map(l => l.match(/^\S+ (\S+)\.png max\s+(\d+)\s+mean ([\d.]+)/)).filter(m => m !== null)
+      .map(m => [m[1], { max: +m[2], mean: +m[3] }]));
+  };
+  const was = parity(base), now = parity(outDir);
+  const off = [...now].filter(([n, p]) => p.max > PARITY.max || p.mean > PARITY.mean || p.mean > (was.get(n)?.mean ?? 0) + PARITY.drift);
+  console.log(`\nswift vs web (${now.size} scenes without text): ${off.length ? off.length + ' further apart than allowed' : 'as close as in the baseline'}`);
+  for (const [n, p] of off) console.error(`  ${n}: mean ${p.mean} (baseline ${was.get(n)?.mean ?? '-'}), max ${p.max}`);
+  if (now.size !== SCENES.filter(s => !s.words).length) { console.error('  could not compare every scene'); failed = true; }
+  process.exit(failed || off.length ? 1 : 0);
 }

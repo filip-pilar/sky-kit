@@ -1,34 +1,10 @@
 {
   "name": "sky-kit",
-  "version": "0.1.0",
   "private": true,
-  "description": "Endless drifting painterly clouds for the web (WebGL2), with a React wrapper.",
+  "description": "The web component: src/sky.js (one ES module, WebGL2), src/react.js, types. Not published to npm.",
   "license": "MIT",
   "type": "module",
-  "exports": {
-    ".": {
-      "types": "./src/sky.d.ts",
-      "default": "./src/sky.js"
-    },
-    "./react": {
-      "types": "./src/react.d.ts",
-      "default": "./src/react.js"
-    }
-  },
-  "files": [
-    "src"
-  ],
-  "sideEffects": false,
-  "peerDependencies": {
-    "react": ">=17"
-  },
-  "peerDependenciesMeta": {
-    "react": {
-      "optional": true
-    }
-  },
   "scripts": {
-    "lint": "oxlint src",
     "check": "node --check src/sky.js && node --check src/react.js && oxlint src"
   },
   "devDependencies": {

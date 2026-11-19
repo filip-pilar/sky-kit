@@ -50,4 +50,4 @@ The Metal shaders (`swift/Sources/SkyKit/Shaders.swift`) are a line-for-line por
 - Fast math is turned off at runtime compile so the noise hash produces the same numbers.
 - Parameter blocks are all `float4`, so the Swift and Metal struct layouts match without padding surprises.
 
-Verify after any shader change with `web/examples/parity.html` (see README).
+After any shader change, `bun run regress` checks each port against its baseline and the two ports against each other on every scene without text: no further apart than in the baseline (mean up by at most 0.01/255, which a one-sided change of a few levels already exceeds) and within mean 0.5/255, max 48 overall (now 0.02–0.23 and 8–27).

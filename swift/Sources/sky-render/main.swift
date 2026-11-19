@@ -6,7 +6,6 @@
 //            at --shape-x 0..1, --size 0..1 (symbols), --form/--hold/--fade seconds, --hold-forever, --density 0..1,
 //            --pause seconds between chained words (0 = straight from one to the next), --release-at seconds;
 //            more symbols at once, each with its own id: --also star@0.72 (repeatable)
-//   --symbol-sheet out.png draws the built-in symbols side by side
 //   --compare dirA dirB [--tolerance N] compares the PNGs of two folders pixel by pixel (exit 1 if any differs by more than N)
 import Foundation
 import CoreGraphics
@@ -18,10 +17,10 @@ var width = 1600, height = 1000, seconds = 0.0, scale = 2.0, out = "sky.png"
 var shapeText: String? = nil, plane = false, heart = false, shapeX: Double? = nil
 var releaseAt: Double? = nil
 var compare: (String, String)? = nil, tolerance = 0
-var form = 5.0, hold = 5.0, fade = 7.0, density = 0.5, pause = 1.0, symbol: SkySymbol? = nil, size = 0.32, symbolSheet: String? = nil
+var form = 5.0, hold = 5.0, fade = 7.0, density = 0.5, pause = 1.0, symbol: SkySymbol? = nil, size = 0.32
 var also: [(SkySymbol, Double)] = []
 
-/// The heart web/examples/parity.html uses (SVG path, viewBox 100×92), drawn at 220 px tall.
+/// The heart web/test/regress.html uses (SVG path, viewBox 100×92), drawn at 220 px tall.
 func heartImage() -> CGImage? {
     let h = 220.0, s = h / 92, w = Int((100 * s).rounded())
     guard let ctx = CGContext(data: nil, width: w, height: Int(h), bitsPerComponent: 8, bytesPerRow: w * 4,
@@ -72,7 +71,6 @@ while !args.isEmpty {
     case "--hold-forever": hold = .infinity
     case "--symbol": symbol = SkySymbol(rawValue: value())   // start forming a built-in symbol at time 0
     case "--size": size = Double(value()) ?? size
-    case "--symbol-sheet": symbolSheet = value()             // just draw every symbol side by side into this PNG and exit
     case "--plane": plane = true                        // a plane from (0, 0.7) to (1, 0.75) at time 0
     case "--compare": compare = (value(), value())
     case "--tolerance": tolerance = Int(value()) ?? 0
@@ -110,18 +108,6 @@ if let (a, b) = compare {
     }
     print(files.isEmpty ? "no PNGs in \(a)" : bad == 0 ? "all \(files.count) match (tolerance \(tolerance))" : "\(bad) of \(files.count) differ")
     exit(files.isEmpty || bad > 0 ? 1 : 0)
-}
-if let symbolSheet {   // the symbols as drawn for the masks (to compare with the browser's SVG)
-    let imgs = SkySymbol.allCases.compactMap { $0.image(height: 110) }
-    let W = imgs.reduce(0) { $0 + $1.width + 10 } + 10
-    let ctx = CGContext(data: nil, width: W, height: 130, bitsPerComponent: 8, bytesPerRow: W * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
-                        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
-    ctx.setFillColor(gray: 1, alpha: 1); ctx.fill(CGRect(x: 0, y: 0, width: W, height: 130))
-    var x = 10
-    for img in imgs { ctx.draw(img, in: CGRect(x: x, y: 10, width: img.width, height: img.height)); x += img.width + 10 }
-    let dest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: symbolSheet) as CFURL, "public.png" as CFString, 1, nil)!
-    CGImageDestinationAddImage(dest, ctx.makeImage()!, nil); CGImageDestinationFinalize(dest)
-    exit(0)
 }
 do {
     let renderer = try SkyRenderer(options: opts)

@@ -7,16 +7,9 @@
     },
     "web": {
       "name": "sky-kit",
-      "version": "0.1.0",
       "devDependencies": {
         "oxlint": "1.94.0",
       },
-      "peerDependencies": {
-        "react": ">=17",
-      },
-      "optionalPeers": [
-        "react",
-      ],
     },
   },
   "packages": {

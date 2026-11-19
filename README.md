@@ -176,7 +176,7 @@ struct ContentView: View {
 ```
 web/src/sky.js         the web component (GLSL shaders in CLOUD_FS, COMPOSITE_FS)
 web/src/react.js       React wrapper; *.d.ts are the typed API
-web/examples/          index (several sizes), playground (every option), react, parity (vs the Swift render)
+web/examples/          index (several sizes), playground (every option), react
 web/test/              regression scenes and behaviour checks, run by scripts/regress.ts
 swift/Sources/SkyKit   SkyView, SkyController, SkyRenderer, SkyOptions, Metal shaders, shape masks, symbols
 swift/Sources/         sky-render (CLI), SkyDemo (macOS app); swift/Tests/ unit tests

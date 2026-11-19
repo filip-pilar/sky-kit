@@ -45,13 +45,6 @@ final class SkyKitTests: XCTestCase {
                                            want: .zero, need: 0.1, allowed: all, box: SIMD2(0.08, 0.05)))
     }
 
-    func testRendersAreDeterministic() throws {
-        guard MTLCreateSystemDefaultDevice() != nil else { throw XCTSkip("no Metal device") }
-        let a = try SkyRenderer().renderImage(width: 320, height: 200, seconds: 4) { $0.showShape(.symbol(.star)) }
-        let b = try SkyRenderer().renderImage(width: 320, height: 200, seconds: 4) { $0.showShape(.symbol(.star)) }
-        XCTAssertEqual(a.dataProvider?.data, b.dataProvider?.data)
-    }
-
     /// Shapes with different ids are on screen together; releasing one id leaves the others; a 4th id takes over the
     /// one used longest ago; and a shape with no room beside the others takes over instead of overlapping.
     func testShapesWithIds() throws {
