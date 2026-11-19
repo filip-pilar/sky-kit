@@ -11,7 +11,7 @@ Live demo, with the code for whatever you set: https://claude.ai/artifact/8YKLPN
 - **Web:** one ES module, `web/src/sky.js`. No dependencies, no build step. The API's source of truth is `web/src/sky.d.ts`. The React wrapper is `web/src/react.js`, typed in `react.d.ts`.
 - **Swift:** a SwiftPM package at the repo root, library `SkyKit`, iOS 16+ and macOS 13+.
 - **npm:** not published. Use jsDelivr or copy the file. `npm install github:filip-pilar/sky-kit` does not work: the repo root is a private workspace, not the library.
-- **Version:** the latest tag is `v0.3.1`. Licence: MIT.
+- **Version:** the latest tag is `v0.3.2`. Licence: MIT.
 - **Cost:** a plain sky is about 0.6 ms of GPU per frame at iPhone resolution on an M4, 1 ms at 2880×1800. A shape on screen adds about 2–3 ms per repaint at iPhone resolution, 5–7 ms at 2880×1800.
 - **When it draws:**
   - It draws 30 fps unless something moves more than about a point a frame (then up to `fps`, default 60).
@@ -24,7 +24,7 @@ Live demo, with the code for whatever you set: https://claude.ai/artifact/8YKLPN
 **Web, from GitHub through jsDelivr** (pin the tag):
 
 ```js
-import { createSky } from 'https://cdn.jsdelivr.net/gh/filip-pilar/sky-kit@v0.3.1/web/src/sky.js';
+import { createSky } from 'https://cdn.jsdelivr.net/gh/filip-pilar/sky-kit@v0.3.2/web/src/sky.js';
 ```
 
 **Web, copied into your project:** copy `web/src/sky.js` and, for TypeScript, `web/src/sky.d.ts`. For React, also copy `web/src/react.js` and `react.d.ts`; it imports `./sky.js` from the same folder.
@@ -32,7 +32,7 @@ import { createSky } from 'https://cdn.jsdelivr.net/gh/filip-pilar/sky-kit@v0.3.
 **Swift**, in `Package.swift` or with Xcode › File › Add Package Dependencies:
 
 ```swift
-.package(url: "https://github.com/filip-pilar/sky-kit", from: "0.3.1")   // product: "SkyKit"
+.package(url: "https://github.com/filip-pilar/sky-kit", from: "0.3.2")   // product: "SkyKit"
 ```
 
 ## Web
@@ -42,7 +42,7 @@ import { createSky } from 'https://cdn.jsdelivr.net/gh/filip-pilar/sky-kit@v0.3.
   <h1>Content placed here sits on top of the sky</h1>
 </div>
 <script type="module">
-  import { createSky } from 'https://cdn.jsdelivr.net/gh/filip-pilar/sky-kit@v0.3.1/web/src/sky.js';
+  import { createSky } from 'https://cdn.jsdelivr.net/gh/filip-pilar/sky-kit@v0.3.2/web/src/sky.js';
 
   const sky = createSky(document.querySelector('#hero'), { coverage: 0.6, planes: true });
   sky.showShape({ text: 'hello' });                           // a nearby cloud turns into "hello", holds, turns back
@@ -140,13 +140,13 @@ function Hero() {
 ### Other frameworks
 
 - **Anything with a DOM element** (Vue, Svelte, Solid, Angular, web components): call `createSky(el, options)` once the element is mounted (`onMounted`, `onMount`, `ngAfterViewInit`, `connectedCallback`) and `sky.destroy()` when it unmounts. No wrapper is needed. Give `el` a size; the sky fills it.
-- **React Native:** there is no native module. Show the web version in [`react-native-webview`](https://github.com/react-native-webview/react-native-webview) (it uses WKWebView on iOS and Android System WebView, both with WebGL2) and drive it with `injectJavaScript`. This is not tested inside a React Native app. For an iOS-only app, the Swift port in a native view is smoother.
+- **React Native:** there is no native module. Show the web version in [`react-native-webview`](https://github.com/react-native-webview/react-native-webview) (it uses WKWebView on iOS and Android System WebView, both with WebGL2) and drive it with `injectJavaScript`. Checked with this snippet in a WKWebView driven the way react-native-webview drives it (on iOS it is a WKWebView): the module loads from jsDelivr and `injectJavaScript` forms words. Not checked inside an actual React Native app or on Android. For an iOS-only app, the Swift port in a native view is smoother.
 
 ```jsx
 import { WebView } from 'react-native-webview';
 
 const html = `<body style="margin:0"><div id="sky" style="position:fixed;inset:0"></div><script type="module">
-  import { createSky } from 'https://cdn.jsdelivr.net/gh/filip-pilar/sky-kit@v0.3.1/web/src/sky.js';
+  import { createSky } from 'https://cdn.jsdelivr.net/gh/filip-pilar/sky-kit@v0.3.2/web/src/sky.js';
   window.sky = createSky(document.getElementById('sky'));
 </script></body>`;
 
@@ -186,7 +186,6 @@ struct ContentView: View {
 - **Web needs WebGL2**, which every current browser has.
 - **At most three shapes at once** (one per `id`). Within an id, a new one takes over, or waits with `queue: true`.
 - **Strict Content-Security-Policy:** where it blocks `blob:` workers (`worker-src`), the web version builds shapes on the main thread, and the sky can stutter for a moment when one starts.
-- **Days of running:** after several days of continuous running at speed 1, the cloud shading could get grainy (float precision of the noise coordinates).
 
 ## Repo map
 

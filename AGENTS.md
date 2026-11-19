@@ -26,4 +26,5 @@ Change both ports together, with matching comments. Functions shared by name (`f
 - For visual changes, look at the renders, not only the numbers: motion and morphs need several frames.
 - To measure GPU cost, time Metal command buffers (`gpuEndTime - gpuStartTime`) around `SkyRenderer.update` and `draw` from a scratch Swift package; it does the same work as the web version. Browser timer queries are not reliable on ANGLE's Metal backend.
 - Verify changes yourself (renders, measurements, headless checks); don't ask the user to test by hand.
+- Never call the cloud shader's noise on an absolute cloud-space position: each `fbm`/`billow` call is a chain with its large part in `noiseOrigins` (both ports), so a new noise call means a new chain there. Positions sent to the shader are relative to the draw's x origin.
 - Tests: only what the scenes can't see. Add a scene to `scripts/regress.ts` rather than a unit test where a render shows it.

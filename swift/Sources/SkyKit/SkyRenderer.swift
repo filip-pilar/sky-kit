@@ -216,24 +216,54 @@ public final class SkyRenderer {
     }
     /// The cloud shader's parameters: a layer snapshot, or (with shapes, as they are at `time`) the live patch.
     private func cloudParams(_ def: LayerDef, x0: Double, y0: Double, time: Double, targetHeight: Int, shapes: [Shape], upp: Double? = nil) -> CloudParams {
-        let seed = def.seed + SIMD2(options.seed * 7.31, options.seed * 3.17)
+        // (x relative to the draw's x origin, in double precision, so the shader's numbers stay small)
+        func rel(_ r: SIMD4<Double>?) -> SIMD4<Float> { r.map { SIMD4(Float($0.x - x0), Float($0.y), Float($0.z), Float($0.w)) } ?? SIMD4(0, 0, 1, 1) }
         func slot(_ k: Int) -> ShapeSlot {
             let shape = k < shapes.count ? shapes[k] : nil
             let amount = shapeAmount(shape, at: time), melt = shapeMelt(shape, at: time)
             return ShapeSlot(
-                rect: SIMD4<Float>(shape?.rect ?? SIMD4(0, 0, 1, 1)),
-                src: SIMD4<Float>(shape?.srcRect ?? SIMD4(0, 0, 1, 1)),
-                prev: SIMD4<Float>(shape?.prev?.rect ?? SIMD4(0, 0, 1, 1)),
+                rect: rel(shape?.rect),
+                src: rel(shape?.srcRect),
+                prev: rel(shape?.prev?.rect),
                 s: SIMD4(Float(amount), Float(melt), Float(shape?.thickness ?? 0), Float(shape?.density ?? 0.5)),
                 // (the previous mask only matters while the morph runs; once formed, only the new one counts)
                 m: SIMD4(amount > 0 && amount < 1 && shape?.prev != nil ? 1 : 0, Float(shape?.prev?.thickness ?? 0), 0, 0))
         }
         return CloudParams(
-            a: SIMD4(Float(x0), Float(y0), Float(upp ?? viewH / Double(cacheH)), Float(viewH)),
-            b: SIMD4(Float(time * def.morph), Float(def.scale), Float(options.coverage), Float(options.shadow)),
-            c: SIMD4(Float(def.haze), Float(def.farMask), Float(seed.x), Float(seed.y)),
+            a: SIMD4(0, Float(y0), Float(upp ?? viewH / Double(cacheH)), Float(viewH)),
+            b: SIMD4(0, Float(def.scale), Float(options.coverage), Float(options.shadow)),
+            c: SIMD4(Float(def.haze), Float(def.farMask), 0, 0),
             d: SIMD4(Float(targetHeight), Float(min(shapes.count, Self.maxLanes)), 0, 0),
             sky: gpuColors(), s0: slot(0), s1: slot(1), s2: slot(2))
+    }
+    /// The large parts of the cloud shader's noise inputs for a draw whose x starts at x0 (O; see gnoise in the shader).
+    private func noiseOrigins(_ def: LayerDef, x0: Double, time: Double) -> [SIMD2<Float>] {
+        let seed = def.seed + SIMD2(options.seed * 7.31, options.seed * 3.17), m = time * def.morph, k = 2.2 / def.scale
+        var o: [SIMD2<Float>] = []
+        func chain(_ n: Int, _ step: SIMD2<Double>, _ x: Double, _ y: Double) {   // octave by octave (p = ROT * p * 2.03 + step), each reduced by the noise's period
+            var x = x, y = y
+            for _ in 0..<n {
+                o.append(SIMD2(Float(x - 4096 * ((x + 2048) / 4096).rounded(.down)), Float(y - 4096 * ((y + 2048) / 4096).rounded(.down))))
+                (x, y) = ((0.8 * x + 0.6 * y) * 2.03 + step.x, (-0.6 * x + 0.8 * y) * 2.03 + step.y)
+            }
+        }
+        let fbm = SIMD2(1.7, 9.2), billow = SIMD2(4.3, 1.1), qx = x0 * k + seed.x   // q = p * (2.2, 3.4) / scale + seed, at (x0, 0)
+        chain(3, fbm, qx * 0.5 + m, seed.y * 0.5 + m)                          // WX
+        chain(3, fbm, qx * 0.5 + 5.2 - m, seed.y * 0.5 + 5.2 - m)              // WY
+        chain(4, fbm, qx * 0.7, seed.y * 0.7)                                  // BASE
+        chain(3, billow, qx * 2, seed.y * 2)                                   // BIL
+        chain(1, fbm, x0 * 160, 0)                                             // GRAIN
+        for (f, cx, cy, n) in Self.shapeNoise { chain(n, fbm, x0 * f + cx, cy) }   // RAG .. SMALL
+        return o
+    }
+    /// The shader's shape noise chains RAG, WOBX, WOBY, LUMPS, BIG, SMALL: (multiplier of p, constant x, y, octaves).
+    private static let shapeNoise: [(Double, Double, Double, Int)] = [(6, 3.1, 5.9, 2), (6.5, 2.3, 8.9, 2), (6.5, 7.7, 1.3, 2), (5.5, 5.1, 7.3, 3), (9, 3.7, 1.9, 3), (26, 8.1, 2.3, 2)]
+    /// The cloud shader's parameters and noise origins, set on `enc`.
+    private func setCloud(_ enc: MTLRenderCommandEncoder, _ def: LayerDef, x0: Double, y0: Double, time: Double, targetHeight: Int, shapes: [Shape], upp: Double? = nil) {
+        var p = cloudParams(def, x0: x0, y0: y0, time: time, targetHeight: targetHeight, shapes: shapes, upp: upp)
+        enc.setFragmentBytes(&p, length: MemoryLayout<CloudParams>.stride, index: 0)
+        let o = noiseOrigins(def, x0: x0, time: time)
+        o.withUnsafeBytes { enc.setFragmentBytes($0.baseAddress!, length: $0.count, index: 1) }
     }
     /// The shapes' textures, three per slot: mask, cloud map, previous mask.
     private func bindShapes(_ enc: MTLRenderCommandEncoder, _ shapes: [Shape]) {
@@ -255,8 +285,7 @@ public final class SkyRenderer {
             let x = cacheW * strip / def.strips, x2 = cacheW * (strip + 1) / def.strips
             enc.setScissorRect(MTLScissorRect(x: x, y: 0, width: max(1, x2 - x), height: cacheH))
         }
-        var p = cloudParams(def, x0: s.x0, y0: 0, time: s.time, targetHeight: cacheH, shapes: [])
-        enc.setFragmentBytes(&p, length: MemoryLayout<CloudParams>.stride, index: 0)
+        setCloud(enc, def, x0: s.x0, y0: 0, time: s.time, targetHeight: cacheH, shapes: [])
         bindShapes(enc, [])
         enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
         enc.endEncoding()
@@ -305,8 +334,7 @@ public final class SkyRenderer {
         // Metal's viewport origin is the top-left: draw into the top-left w×h of the texture, with the shader's
         // y flip over the drawn height h (the composite samples it at (u, 1 - v) × patchUV)
         enc.setViewport(MTLViewport(originX: 0, originY: 0, width: Double(w), height: Double(h), znear: 0, zfar: 1))
-        var p = cloudParams(layers[1].def, x0: x0, y0: y0, time: simTime, targetHeight: h, shapes: shapes)
-        enc.setFragmentBytes(&p, length: MemoryLayout<CloudParams>.stride, index: 0)
+        setCloud(enc, layers[1].def, x0: x0, y0: y0, time: simTime, targetHeight: h, shapes: shapes)
         bindShapes(enc, shapes)
         enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
         enc.endEncoding()
@@ -629,8 +657,7 @@ public final class SkyRenderer {
             rp.colorAttachments[0].texture = tex; rp.colorAttachments[0].loadAction = .dontCare; rp.colorAttachments[0].storeAction = .store
             guard let enc = cb.makeRenderCommandEncoder(descriptor: rp) else { return nil }
             enc.setRenderPipelineState(cloudPipeline)
-            var p = cloudParams(layers[1].def, x0: x0, y0: y0, time: t, targetHeight: gh, shapes: [], upp: step)
-            enc.setFragmentBytes(&p, length: MemoryLayout<CloudParams>.stride, index: 0)
+            setCloud(enc, layers[1].def, x0: x0, y0: y0, time: t, targetHeight: gh, shapes: [], upp: step)
             bindShapes(enc, [])
             enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
             enc.endEncoding()

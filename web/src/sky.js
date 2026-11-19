@@ -74,18 +74,18 @@ vec3 skyAt(float v){          // v: 0 = bottom of view, 1 = top
 
 const CLOUD_FS = `#version 300 es
 precision highp float;
-uniform vec2 uWin0;           // cloud-space position of the snapshot's bottom-left pixel
+uniform vec2 uWin0;           // the snapshot's bottom-left pixel, relative to the draw's x origin: (0, y0)
 uniform float uUpp;           // cloud units per snapshot pixel
 uniform float uViewH;         // view height in cloud units
-uniform float uMorph, uScale, uCov, uShadow, uHaze, uFarMask;
-uniform vec2 uSeed;
+uniform float uScale, uCov, uShadow, uHaze, uFarMask;
+uniform vec2 uOrig[28];       // the noise inputs' large parts (see gnoise)
 // Shapes, up to 3 at once (slots 0..2; uShapes = how many are in use). Each has its mask (R = the shape, from the
 // distance to its outline; G = near halo; B = very wide blur, the shape's body; A = how near the shape is, 0 at the
 // image's edge), the map of the cloud it is made from (1 on it: only that cloud gives way) and, while it turns
 // straight from the previous shape, that one's mask.
 uniform int uShapes;
 uniform sampler2D uMask0, uMask1, uMask2, uSrcMap0, uSrcMap1, uSrcMap2, uPrevMask0, uPrevMask1, uPrevMask2;
-uniform vec4 uMaskRect[3], uSrcRect[3], uPrevRect[3];   // cloud-space x0, y0, width, height of each
+uniform vec4 uMaskRect[3], uSrcRect[3], uPrevRect[3];   // x0, y0, width, height of each (x relative to the draw's x origin)
 uniform vec4 uShapeS[3];      // (forming 0..1: stays 1 while holding and melting; melting 0..1; thickness: 0 = thin
                               // strokes like text .. 1 = a solid shape like a heart; density 0..1, 0.5 = like the clouds around)
 uniform vec2 uShapeM[3];      // (1 = turning straight from the previous shape, its thickness)
@@ -93,24 +93,31 @@ out vec4 outColor;
 ${COMMON}
 const vec3 LIT = vec3(1.0, 0.98, 0.94), SHADE = vec3(0.635, 0.722, 0.902), RIM = vec3(1.0, 0.925, 0.8);
 const vec3 L = vec3(-0.50, 0.70, 0.52);
+// The noise repeats every 4096 cells (far more than a view spans), so its inputs can be kept small: each fbm or
+// billow call below is a chain of octaves, and the large part of each octave's input (where the draw is in the
+// endless sky, the seed, the morph over time) is added up on the CPU in double precision and reduced by that
+// period (noiseOrigins), arriving in uOrig[chain + octave]; only the small local part is added here. So the noise is
+// as fine after months of running as at the start. p is relative to the draw's x origin.
+const int WX = 0, WY = 3, BASE = 6, BIL = 10, GRAIN = 13, RAG = 14, WOBX = 16, WOBY = 18, LUMPS = 20, BIG = 23, SMALL = 26;
 vec2 hash22(vec2 p){ vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973)); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.xx + p3.yz) * p3.zy); }
 float gnoise(vec2 p){
   vec2 i = floor(p), f = fract(p);
+  vec2 j = i - 4096.0 * floor((i + 2048.0) / 4096.0), k = j + 1.0 - 4096.0 * step(2047.0, j);   // this cell and the next, in the period
   vec2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
-  float a = dot(hash22(i) * 2.0 - 1.0, f);
-  float b = dot(hash22(i + vec2(1, 0)) * 2.0 - 1.0, f - vec2(1, 0));
-  float c = dot(hash22(i + vec2(0, 1)) * 2.0 - 1.0, f - vec2(0, 1));
-  float d = dot(hash22(i + vec2(1, 1)) * 2.0 - 1.0, f - vec2(1, 1));
+  float a = dot(hash22(j) * 2.0 - 1.0, f);
+  float b = dot(hash22(vec2(k.x, j.y)) * 2.0 - 1.0, f - vec2(1, 0));
+  float c = dot(hash22(vec2(j.x, k.y)) * 2.0 - 1.0, f - vec2(0, 1));
+  float d = dot(hash22(k) * 2.0 - 1.0, f - vec2(1, 1));
   return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
 }
-float fbm(vec2 p, int oct){
+float fbm(int ch, vec2 p, int oct){
   float s = 0.0, a = 0.5;
-  for (int i = 0; i < 6; i++){ if (i >= oct) break; s += a * gnoise(p); p = ROT * p * 2.03 + vec2(1.7, 9.2); a *= 0.5; }
+  for (int i = 0; i < 6; i++){ if (i >= oct) break; s += a * gnoise(uOrig[ch + i] + p); p = ROT * p * 2.03; a *= 0.5; }
   return s;
 }
-float billow(vec2 p, int oct){
+float billow(int ch, vec2 p, int oct){
   float s = 0.0, a = 0.5, n = 0.0;
-  for (int i = 0; i < 6; i++){ if (i >= oct) break; s += a * abs(gnoise(p)) * 1.4; n += a; p = ROT * p * 2.03 + vec2(4.3, 1.1); a *= 0.5; }
+  for (int i = 0; i < 6; i++){ if (i >= oct) break; s += a * abs(gnoise(uOrig[ch + i] + p)) * 1.4; n += a; p = ROT * p * 2.03; a *= 0.5; }
   return s / n;
 }
 
@@ -162,7 +169,7 @@ float withShape(int k, sampler2D mask, sampler2D srcMap, sampler2D prevMask, flo
   float t = sv.z;
   float form = morph ? 1.0 - sv.y : sv.x * (1.0 - sv.y);   // rises while forming, falls while melting
   float cloudy = smoothstep(thr - 0.25, thr + 0.1, v);              // 1 on a cloud
-  float rag = lite ? 0.5 : fbm(p * 6.0 + vec2(3.1, 5.9), 2) + 0.5;
+  float rag = lite ? 0.5 : fbm(RAG, p * 6.0, 2) + 0.5;
   float when = clamp(smoothstep(0.25, 0.75, rag) * 0.7 + (1.0 - cloudy) * 0.2, 0.0, 0.75);   // puff by puff, spread over the whole time; on the cloud a little sooner
   float S = smoothstep(when, when + 0.25, form);
   // the previous shape's outline → this one's, puff by puff, first where the previous shape is, then outward
@@ -173,14 +180,14 @@ float withShape(int k, sampler2D mask, sampler2D srcMap, sampler2D prevMask, flo
   shR = mix(mp.x, m.x, K);
   if (m.y > 0.0 || mp.y > 0.0){
     // the outline wobbles at puff scale by a few mask pixels (so it scales with the shape and can't tear small parts)
-    vec2 wob = lite ? vec2(0.0) : vec2(fbm(p * 6.5 + vec2(2.3, 8.9), 2), fbm(p * 6.5 + vec2(7.7, 1.3), 2))
+    vec2 wob = lite ? vec2(0.0) : vec2(fbm(WOBX, p * 6.5, 2), fbm(WOBY, p * 6.5, 2))
                                   * (uMaskRect[k].w / float(textureSize(mask, 0).y)) * mix(4.5, 6.5, t);
     vec4 ms = maskAt(mask, uMaskRect[k], p + wob), mps = K < 1.0 ? maskAt(prevMask, uPrevRect[k], p + wob) : vec4(0.0);
     R = mix(mps.x, ms.x, K);
     if (R > 0.001){
-      float lumps = lite ? 0.0 : fbm(p * 5.5 + vec2(5.1, 7.3), 3);
-      float big = lite ? 0.0 : fbm(p * 9.0 + vec2(3.7, 1.9), 3);
-      float small = lite ? 0.0 : fbm(p * 26.0 + vec2(8.1, 2.3), 2);
+      float lumps = lite ? 0.0 : fbm(LUMPS, p * 5.5, 3);
+      float big = lite ? 0.0 : fbm(BIG, p * 9.0, 3);
+      float small = lite ? 0.0 : fbm(SMALL, p * 26.0, 2);
       fill = shapeFill(ms.x, ms.z, t, thr, v, bil, lumps, big, small, sv.w);
       if (K < 1.0) fill = mix(shapeFill(mps.x, mps.z, uShapeM[k].y, thr, v, bil, lumps, big, small, sv.w), fill, K);
     }
@@ -207,11 +214,11 @@ float withShapes(float v, vec2 p, float thr, float bil, bool lite, out float own
   return v;
 }
 
-vec4 cumulus(vec2 p, float scale, vec2 seed, float cov, float morph, out int who){
-  vec2 q = p * vec2(2.2, 3.4) / scale + seed;
-  vec2 w = vec2(fbm(q * 0.5 + morph, 3), fbm(q * 0.5 + 5.2 - morph, 3));
-  float base = fbm(q * 0.7 + w * 0.6, 4);
-  float bil = billow(q * 2.0 + w, 3);
+vec4 cumulus(vec2 p, float scale, float cov, out int who){
+  vec2 q = p * vec2(2.2, 3.4) / scale;   // (plus the seed, and for w the morph: in uOrig)
+  vec2 w = vec2(fbm(WX, q * 0.5, 3), fbm(WY, q * 0.5, 3));
+  float base = fbm(BASE, q * 0.7 + w * 0.6, 4);
+  float bil = billow(BIL, q * 2.0 + w, 3);
   float thr = mix(0.22, -0.12, cov);
   float own, shR;
   float v = withShapes(base + 0.15 * (bil - 0.35), p, thr, bil, false, own, shR, who);
@@ -223,13 +230,13 @@ vec4 cumulus(vec2 p, float scale, vec2 seed, float cov, float morph, out int who
   float inShape = shR * own * (1.0 - sv.z);                          // softer fine texture inside thin shapes (text)
   return vec4(D, (0.05 * dome + 0.012 * D * bil * (1.0 - 0.5 * inShape)) * scale, own, shR);
 }
-float cumulusLite(vec2 p, float scale, vec2 seed, float cov, float morph){
-  vec2 q = p * vec2(2.2, 3.4) / scale + seed;
-  vec2 w = vec2(fbm(q * 0.5 + morph, 2), fbm(q * 0.5 + 5.2 - morph, 2));
+float cumulusLite(vec2 p, float scale, float cov){
+  vec2 q = p * vec2(2.2, 3.4) / scale;
+  vec2 w = vec2(fbm(WX, q * 0.5, 2), fbm(WY, q * 0.5, 2));
   float thr = mix(0.22, -0.12, cov);
   float own, shR;
   int who;
-  float v = withShapes(fbm(q * 0.7 + w * 0.6, 3), p, thr, 0.35, true, own, shR, who);
+  float v = withShapes(fbm(BASE, q * 0.7 + w * 0.6, 3), p, thr, 0.35, true, own, shR, who);
   return smoothstep(thr, thr + 0.22, v);
 }
 void main(){
@@ -238,7 +245,7 @@ void main(){
   vec3 sky = skyAt(vv);
   float cov = uCov * mix(1.0, 0.75 + 0.35 * (1.0 - smoothstep(0.1, 0.8, vv)), uFarMask);   // edges in order: reversed edges are undefined in GLSL/Metal
   int who;
-  vec4 D0 = cumulus(p, uScale, uSeed, cov, uMorph, who);
+  vec4 D0 = cumulus(p, uScale, cov, who);
   float alpha = smoothstep(0.0, 0.61, D0.x);
   vec2 grad = vec2(dFdx(D0.y), dFdy(D0.y)) / uUpp;
   if (alpha < 0.002){ outColor = vec4(0.0); return; }
@@ -250,7 +257,7 @@ void main(){
   s = mix(s, (floor(f) + smoothstep(0.4, 0.6, fract(f))) / 2.0, 0.3);
   vec3 c = mix(SHADE, LIT, s);
   float occ = 0.0;
-  for (int i = 1; i <= 4; i++){ vec2 ps = p + L2 * 0.028 * float(i) * uScale; occ += cumulusLite(ps, uScale, uSeed, cov, uMorph); }
+  for (int i = 1; i <= 4; i++){ vec2 ps = p + L2 * 0.028 * float(i) * uScale; occ += cumulusLite(ps, uScale, cov); }
   c = mix(c, SHADE, smoothstep(0.35, 0.95, occ / 4.0) * uShadow);
   c = mix(c, SHADE, smoothstep(0.45, 1.0, D0.x) * 0.2 * uShadow * (1.0 - s));
   // a thin shape barely shades itself: give its body the tone a big cloud's body has (a solid one shades itself, so less)
@@ -259,10 +266,13 @@ void main(){
   float facing = clamp(dot(normalize(n.xy + 1e-5), L2), 0.0, 1.0);
   c += RIM * edge * facing * 0.45;
   c = mix(c, sky, edge * (1.0 - facing) * 0.35);
-  c += gnoise(p * 160.0) * 0.012;
+  c += gnoise(uOrig[GRAIN] + p * 160.0) * 0.012;
   c = mix(c, mix(sky, vec3(1.0), 0.4), uHaze);
   outColor = vec4(min(c, 1.0) * alpha, alpha);
 }`;
+
+// the cloud shader's shape noise chains RAG, WOBX, WOBY, LUMPS, BIG, SMALL: [multiplier of p, constant x, y, octaves]
+const SHAPE_NOISE = [[6, 3.1, 5.9, 2], [6.5, 2.3, 8.9, 2], [6.5, 7.7, 1.3, 2], [5.5, 5.1, 7.3, 3], [9, 3.7, 1.9, 3], [26, 8.1, 2.3, 2]];
 
 const COMPOSITE_FS = `#version 300 es
 precision highp float;
@@ -786,6 +796,25 @@ export function createSky(container, options = {}) {
   }
   const freeSnap = s => { gl.deleteTexture(s.tex); gl.deleteFramebuffer(s.fb); };
   const layerSeed = L => [L.seed[0] + S.seed * 7.31, L.seed[1] + S.seed * 3.17];
+  // the large parts of the cloud shader's noise inputs for a draw whose x starts at x0 (uOrig; see gnoise in CLOUD_FS)
+  function noiseOrigins(L, x0, time) {
+    const o = new Float32Array(56), [sx, sy] = layerSeed(L), m = time * L.morph, k = 2.2 / L.scale;
+    let at = 0;
+    const chain = (n, step, x, y) => {   // octave by octave (p = ROT * p * 2.03 + step), each reduced by the noise's period
+      for (let i = 0; i < n; i++, at++) {
+        o[2 * at] = x - 4096 * Math.floor((x + 2048) / 4096); o[2 * at + 1] = y - 4096 * Math.floor((y + 2048) / 4096);
+        [x, y] = [(0.8 * x + 0.6 * y) * 2.03 + step[0], (-0.6 * x + 0.8 * y) * 2.03 + step[1]];
+      }
+    };
+    const FBM = [1.7, 9.2], BILLOW = [4.3, 1.1], qx = x0 * k + sx;   // q = p * (2.2, 3.4) / scale + seed, at (x0, 0)
+    chain(3, FBM, qx * 0.5 + m, sy * 0.5 + m);                          // WX
+    chain(3, FBM, qx * 0.5 + 5.2 - m, sy * 0.5 + 5.2 - m);              // WY
+    chain(4, FBM, qx * 0.7, sy * 0.7);                                  // BASE
+    chain(3, BILLOW, qx * 2, sy * 2);                                   // BIL
+    chain(1, FBM, x0 * 160, 0);                                         // GRAIN
+    for (const [f, cx, cy, n] of SHAPE_NOISE) chain(n, FBM, x0 * f + cx, cy);   // RAG .. SMALL
+    return o;
+  }
   function place(L, snap, time) { snap.time = time; snap.x0 = dir() * L.speed * time - MARGIN; }
   function setSkyUniforms(u) {
     const [t, m, l] = colors();
@@ -814,10 +843,11 @@ export function createSky(container, options = {}) {
     gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
     gl.viewport(0, 0, w, h);
     if (scissor) { gl.enable(gl.SCISSOR_TEST); gl.scissor(...scissor); }
-    gl.uniform2f(u.uWin0, x0, y0); gl.uniform1f(u.uUpp, upp); gl.uniform1f(u.uViewH, viewH);
-    gl.uniform1f(u.uMorph, time * L.morph); gl.uniform1f(u.uScale, L.scale);
+    gl.uniform2f(u.uWin0, 0, y0); gl.uniform1f(u.uUpp, upp); gl.uniform1f(u.uViewH, viewH);
+    gl.uniform1f(u.uScale, L.scale); gl.uniform2fv(u.uOrig, noiseOrigins(L, x0, time));
     gl.uniform1f(u.uCov, S.coverage); gl.uniform1f(u.uShadow, S.shadow);
-    gl.uniform1f(u.uHaze, L.haze); gl.uniform1f(u.uFarMask, L.farMask); gl.uniform2fv(u.uSeed, layerSeed(L));
+    gl.uniform1f(u.uHaze, L.haze); gl.uniform1f(u.uFarMask, L.farMask);
+    const rel = r => [r[0] - x0, r[1], r[2], r[3]];   // (in double precision, so the shader's numbers stay small)
     const rects = new Float32Array(12), srcs = new Float32Array(12), prevs = new Float32Array(12), st = new Float32Array(12), mo = new Float32Array(6);
     for (let k = 0; k < MAX_LANES; k++) {
       const sh = shapes[k], ln = sh?.lane, amt = shapeAmt(sh, time), melt = shapeMelt(sh, time);
@@ -825,7 +855,7 @@ export function createSky(container, options = {}) {
       gl.activeTexture(gl.TEXTURE0 + 3 * k); gl.bindTexture(gl.TEXTURE_2D, amt > 0 ? ln.tex : emptyTex); gl.uniform1i(u['uMask' + k], 3 * k);
       gl.activeTexture(gl.TEXTURE1 + 3 * k); gl.bindTexture(gl.TEXTURE_2D, amt > 0 && sh?.src ? sh.src.tex : emptyTex); gl.uniform1i(u['uSrcMap' + k], 3 * k + 1);
       gl.activeTexture(gl.TEXTURE2 + 3 * k); gl.bindTexture(gl.TEXTURE_2D, prev ? ln.prevTex : emptyTex); gl.uniform1i(u['uPrevMask' + k], 3 * k + 2);
-      rects.set(sh ? sh.rect : [0, 0, 1, 1], 4 * k); srcs.set(sh?.src ? sh.src.rect : [0, 0, 1, 1], 4 * k); prevs.set(prev ? prev.rect : [0, 0, 1, 1], 4 * k);
+      rects.set(sh ? rel(sh.rect) : [0, 0, 1, 1], 4 * k); srcs.set(sh?.src ? rel(sh.src.rect) : [0, 0, 1, 1], 4 * k); prevs.set(prev ? rel(prev.rect) : [0, 0, 1, 1], 4 * k);
       st.set([amt, melt, sh ? sh.thick : 0, sh ? sh.density : 0.5], 4 * k); mo.set([prev ? 1 : 0, prev ? prev.thick : 0], 2 * k);
     }
     gl.uniform1i(u.uShapes, Math.min(shapes.length, MAX_LANES));

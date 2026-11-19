@@ -11,6 +11,8 @@ One cloud recipe ("natural cumulus") with painterly shading, in two depth layers
 
 **Cloud recipe** (`cumulus()`): domain-warped fractal noise plus a little billowy noise, thresholded by coverage. It returns *density* (how much cloud, drives transparency) and *height* (a bump height in cloud units, drives shading). A wide second threshold (`dome`) gives every cloud a rounded overall shape so its inside isn't flat.
 
+**Running for months:** the sky scrolls through endless cloud space, so positions grow with time (about 1,400 cloud units a day at speed 1), and 32-bit floats in the shader would lose the fine detail within a week and show streaks after a month. So the shader never sees large numbers. The noise repeats every 4096 lattice cells (far more than a view spans, so nothing on screen repeats). Each `fbm`/`billow` call is a chain of octaves, and each octave's large input (where the draw starts, the seed, the morph over time) is added up on the CPU in double precision and reduced by that period (`noiseOrigins`, both ports); the shader adds only the small local part. Shape rectangles are sent relative to the draw's x origin. Measured at 1 year of sky time: renders as fine-grained as at 1 minute, and the two ports still match.
+
 **Shading** (cloud fragment shader):
 - light from the upper left, a soft two-band ramp between `SHADE` (pastel blue, never grey) and `LIT` (warm white)
 - self-shadow: four cheap density lookups toward the sun; only points deep inside, away from the sun, get shaded
