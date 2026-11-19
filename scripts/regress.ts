@@ -1,4 +1,4 @@
-// Pixel regression check for both ports.
+// Pixel regression check for both ports, plus the web behaviour checks (web/test/checks.js).
 //
 //   bun scripts/regress.ts baseline     render the scenes below with the current code (do this before a change)
 //   bun scripts/regress.ts check [N]    render them again and compare with the baseline (exit 1 if a pixel differs by more than N/255)
@@ -101,18 +101,24 @@ await browser.exited;
 server.stop(true);
 rmSync(profile, { recursive: true, force: true });
 let written = 0;
+const checks: string[] = [];   // behaviour checks (web/test/checks.js)
 for (const line of out.trim().split('\n')) {
   const [name, dataUrl, extra] = line.split(' ');
   if (name === '#workers') {   // shape workers started, and errors in them (a failing worker falls back silently)
     if (dataUrl === '0' || extra !== '0') { console.error(`shape worker: ${dataUrl} started, ${extra} failed`); process.exit(1); }
     continue;
   }
+  if (name === '#check') { checks.push(line.slice(7)); continue; }
   if (!dataUrl?.startsWith('data:image/png;base64,')) { console.error('no image for', name); process.exit(1); }
   writeFileSync(join(outDir, 'web', name + '.png'), Buffer.from(dataUrl.slice(22), 'base64'));
   written++;
 }
 if (written !== SCENES.length) { console.error(`web rendered ${written} of ${SCENES.length} scenes`); process.exit(1); }
 console.log(`rendered ${SCENES.length} scenes per port into ${outDir}`);
+const failedChecks = checks.filter(c => !c.startsWith('PASS'));
+console.log(`web behaviour checks: ${checks.length - failedChecks.length} of ${checks.length} pass`);
+for (const c of failedChecks) console.error('  ' + c);
+if (!checks.length || failedChecks.length) process.exit(1);
 
 if (mode === 'check') {
   const base = join(root, '.regress', 'baseline');

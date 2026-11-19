@@ -665,7 +665,14 @@ export function createSky(container, options = {}) {
   canvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;display:block;pointer-events:none;z-index:-1';
   canvas.setAttribute('aria-hidden', 'true');
   const savedStyle = { position: container.style.position, isolation: container.style.isolation };
-  if (getComputedStyle(container).position === 'static') container.style.position = 'relative';
+  // the canvas needs a positioned container: a static one is made relative. Checked again once the page has loaded,
+  // because a stylesheet that is still loading reads as static (and a forced `relative` would beat its `fixed`)
+  const position = () => {
+    container.style.position = savedStyle.position;
+    if (getComputedStyle(container).position === 'static') container.style.position = 'relative';
+  };
+  position();
+  if (document.readyState !== 'complete') addEventListener('load', position, { once: true });
   container.style.isolation = 'isolate';
   container.insertBefore(canvas, container.firstChild);
 
@@ -835,11 +842,13 @@ export function createSky(container, options = {}) {
     if (shape?.src && gl) gl.deleteTexture(shape.src.tex);
     shape = null;
   }
+  // repaint after a setting change or a resize: the two snapshots on screen now, the next one a strip per frame as
+  // usual (it is finished before it is needed), so the hitch is two thirds of a full repaint
   function rebuildAll() {
     if (shape) shape.patchReady = false;
     for (const L of layers) {
       const t0 = L.snaps[0].time;
-      L.snaps.forEach((s, k) => { place(L, s, t0 + k * L.dt); paint(L, s, -1); s.strip = L.strips; });
+      L.snaps.forEach((s, k) => { place(L, s, t0 + k * L.dt); if (k < 2) { paint(L, s, -1); s.strip = L.strips; } else s.strip = 0; });
     }
   }
   function setupCaches() {
@@ -1301,6 +1310,7 @@ export function createSky(container, options = {}) {
       for (const j of jobs.values()) j.resolve(null);   // (their showShape calls return)
       jobs.clear();
       ro.disconnect(); io.disconnect(); document.removeEventListener('visibilitychange', onVis);
+      removeEventListener('load', position);
       reduceMotion?.removeEventListener?.('change', onMotionPref);
       dprQuery?.removeEventListener('change', onDpr);
       gl?.getExtension('WEBGL_lose_context')?.loseContext();

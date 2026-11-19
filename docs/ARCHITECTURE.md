@@ -33,7 +33,7 @@ Measured on an M4 at 2880×1800: about 2 ms per frame (vs. 35–40 ms if the clo
 
 The frame rate follows the motion (`frameRate` in both ports): up to `fps` (60), but 30 while nothing moves more than about a point a frame at 30. At speed 1 the clouds drift about 6 points a second on a phone and 14 on a laptop, so they always get 30; a plane crossing a laptop screen (about 54 points a second) or a fast `speed` gets the full rate.
 
-Changing `coverage`, `shadow`, `seed`, `direction` or colours repaints all snapshots at once (a short hitch); `cloudScale` or `quality` reallocates them.
+Changing `coverage`, `shadow`, `seed`, `direction` or colours repaints the two snapshots on screen at once (a short hitch: about 24 ms of GPU at 2880×1800 and 10 ms at iPhone resolution on an M4) and the next one a strip per frame as usual; `cloudScale`, `quality` or a resize reallocates them, then does the same.
 
 ## Extras (all cheap; same in web and Swift)
 

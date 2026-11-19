@@ -272,12 +272,15 @@ public final class SkyRenderer {
         sh.patchUV = SIMD2(Double(w) / Double(tex.width), Double(h) / Double(tex.height))
         sh.patchTime = simTime; sh.patchReady = true
     }
+    /// Repaint after a setting change or a resize: the two snapshots on screen now, the next one a strip per frame as
+    /// usual (it is finished before it is needed), so the hitch is two thirds of a full repaint.
     private func rebuildAll(_ cb: MTLCommandBuffer) {
         shape?.patchReady = false
         for l in layers {
             let t0 = l.snaps[0].time
             for (k, s) in l.snaps.enumerated() {
-                place(l.def, s, time: t0 + Double(k) * l.def.dt); paint(l.def, s, strip: -1, cb); s.strip = l.def.strips
+                place(l.def, s, time: t0 + Double(k) * l.def.dt)
+                if k < 2 { paint(l.def, s, strip: -1, cb); s.strip = l.def.strips } else { s.strip = 0 }
             }
         }
     }
