@@ -41,7 +41,8 @@ export interface ShapeOptions {
   image?: string | HTMLImageElement | HTMLCanvasElement | ImageBitmap;
   /** One of the built-in symbols (see SKY_SYMBOLS). */
   symbol?: SkySymbolName;
-  /** Centre, 0..1 of the view (y = 0 is the bottom). Default 0.5, 0.6. */
+  /** Centre, 0..1 of the view (y = 0 is the bottom), where the shape is halfway through its hold. Default 0.5, 0.6.
+   * When given, the cloud right there is strongly preferred (to form on a cloud someone tapped). */
   x?: number;
   y?: number;
   /** Height of the shape as a fraction of the view height. Default 0.32. */

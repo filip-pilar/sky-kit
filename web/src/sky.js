@@ -997,8 +997,9 @@ export function createSky(container, options = {}) {
       redraw();
     };
     if (from) settle(null);
+    // (asked for a spot, or following on the last shape's cloud: strongly prefer the cloud right there)
     else cloudNear(o._near ? o._near[0] : cx, o._near ? o._near[1] : cy, img.area * k * k, [t0, tMid, tEnd],
-                   Math.min(s0, s1) - 0.3, Math.max(s0, s1) + vw + 0.3, allowed, [hw, hh], !!o._near, settle);
+                   Math.min(s0, s1) - 0.3, Math.max(s0, s1) + vw + 0.3, allowed, [hw, hh], !!o._near || o.x != null || o.y != null, settle);
   }
   // the cloud to put a shape on (pickCloud), from maps of the near clouds over x0..x1 (all that is on screen while
   // the shape lives) at the moments it starts forming, holds and ends; done(found or null). The maps are read back
@@ -1239,19 +1240,21 @@ export function createSky(container, options = {}) {
      * straight into this one once it has held (word, next word, ...). Needs speed > 0.
      */
     async showShape(o) {
-      let src = o.text;
-      if (o.symbol) src = SKY_SYMBOLS[o.symbol] ? await loadImage('data:image/svg+xml,' + encodeURIComponent(skySymbolSvg(o.symbol, '#000'))) : null;
-      if (o.image) src = typeof o.image === 'string' ? await loadImage(o.image) : o.image;
-      if (!src) return;
-      if (!layers[0]?.snaps) { await ready; if (!layers[0]?.snaps) return; }   // (before the first frame: wait for it)
+      if (!o.image && (o.symbol ? !SKY_SYMBOLS[o.symbol] : !o.text)) return;   // (nothing to form)
       o = { ...o, pause: Math.max(0, o.pause ?? 1) };
+      // its place is taken now, in call order (loading an image and building the mask take a while)
       const queued = !!o.queue && (!!shape || !!placing || shapeQueue.length > 0 || leadBuilding > 0);
       const slot = queued ? { img: null, o } : null;
       if (slot) shapeQueue.push(slot);                       // keeps call order while the images build
       else { shapeTicket++; shapeQueue = []; leadBuilding++; }
       const ticket = shapeTicket;                            // a newer showShape or a clearShape wins
       let img = null, error = null;
-      try { img = await buildShapeImage(src); } catch (e) { error = e; } finally { if (!slot) leadBuilding--; }
+      try {
+        const src = o.image ? (typeof o.image === 'string' ? await loadImage(o.image) : o.image)
+          : o.symbol ? await loadImage('data:image/svg+xml,' + encodeURIComponent(skySymbolSvg(o.symbol, '#000'))) : o.text;
+        if (!layers[0]?.snaps) await ready;                  // (before the first frame: wait for it)
+        if (layers[0]?.snaps && !destroyed) img = await buildShapeImage(src);
+      } catch (e) { error = e; } finally { if (!slot) leadBuilding--; }
       if (!img || img.area < 1) {   // couldn't be drawn, or nothing to draw (a blank text or image): the queue goes on without it
         if (slot) shapeQueue = shapeQueue.filter(s => s !== slot);
         placeNext();

@@ -36,6 +36,10 @@ async function checkMode(createSky, mode, out) {
   check('a newer word wins', await until(() => st().label === 'new') && (await wait(200), st().label === 'new'), JSON.stringify(st()));
   sky.clearShape();
 
+  sky.showShape({ symbol: 'heart' }); await sky.showShape({ text: 'later' });   // (the symbol's picture loads after the call)
+  check('a newer word wins over a symbol still loading', await until(() => st().label === 'later') && (await wait(300), st().label === 'later'), JSON.stringify(st()));
+  sky.clearShape();
+
   sky.pause();
   await sky.showShape({ text: 'paused' });
   check('a shape lands while the sky is paused', await until(() => st().label === 'paused') && st().phase === 'waiting', JSON.stringify(st()));

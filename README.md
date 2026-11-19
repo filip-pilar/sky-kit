@@ -93,7 +93,7 @@ import { createSky } from 'https://cdn.jsdelivr.net/gh/filip-pilar/sky-kit@v0.2.
 | Field | Default | |
 |---|---|---|
 | `text` / `symbol` / `image` | | one of: text or emoji; a built-in symbol (`heart`, `star`, `sun`, `moon`, `smile`, `music`, `bolt`, `infinity`); an image as a URL, `<img>`, canvas or `ImageBitmap` |
-| `x`, `y` | `0.5`, `0.6` | where, 0..1 of the view (y = 0 at the bottom) |
+| `x`, `y` | `0.5`, `0.6` | where, 0..1 of the view (y = 0 at the bottom), for the middle of its hold (the clouds drift meanwhile); when given, the cloud right there is strongly preferred, so a tap can pick the cloud |
 | `size` | `0.32` | height as a fraction of the view height; shrinks to fit 70% of the width |
 | `form`, `hold`, `fade` | `5`, `5`, `7` | seconds; `hold: Infinity` holds until `releaseShape()` |
 | `density` | `0.5` | 0 = wispy and see-through, 0.5 = like the clouds around, 1 = solid |
@@ -103,6 +103,7 @@ import { createSky } from 'https://cdn.jsdelivr.net/gh/filip-pilar/sky-kit@v0.2.
 How shapes behave:
 
 - **Which cloud:** the shape forms on a real cloud near `x, y`. That cloud reshapes into it and back, and stays.
+- **Call order wins:** a newer `showShape` (not queued) replaces an older one still loading its image, and queued ones keep their call order.
 - **Calling `showShape` while a shape shows** takes over without a jump:
   - if that shape is holding, it turns into the new one now;
   - if it is still forming, as soon as it has formed;
@@ -152,7 +153,7 @@ struct ContentView: View {
 
 - **`SkyOptions`** has the web option names and defaults. `colors: SkyColors(top:mid:low:)` replaces `skyTop`/`skyMid`/`skyLow`. Its initialiser takes arguments in declaration order. Changing the value passed to `SkyView` updates the sky live.
 - **`SkyController`** has:
-  - `showShape(.text("hi") | .symbol(.star) | .image(cgImage), x:y:size:form:hold:fade:density:queue:pause:)`, with the web defaults; `hold: .infinity` holds until released;
+  - `showShape(.text("hi") | .symbol(.star) | .image(cgImage), x:y:size:form:hold:fade:density:queue:pause:)`, with the web defaults; `x`/`y` are optional (given = prefer the cloud there); `hold: .infinity` holds until released;
   - `releaseShape()`, `clearShape()`, `flyPlane(from:to:)`, `shapeState`, `snapshot(width:height:)` (a `CGImage`).
 - **When it draws:** the view stops drawing when nothing moves (speed 0 or Reduce Motion) and wakes when something changes.
 - **`SkyRenderer`** is the Metal renderer on its own, for custom views or offscreen use. `renderImage(width:height:seconds:)` returns a `CGImage`. Its own `showShape` builds the mask on the calling thread (tens of ms); `SkyController` builds it in the background.

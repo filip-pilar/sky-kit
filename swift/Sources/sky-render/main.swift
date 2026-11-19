@@ -14,7 +14,7 @@ import SkyKit
 
 var opts = SkyOptions()
 var width = 1600, height = 1000, seconds = 0.0, scale = 2.0, out = "sky.png"
-var shapeText: String? = nil, plane = false, heart = false, shapeX = 0.5
+var shapeText: String? = nil, plane = false, heart = false, shapeX: Double? = nil
 var releaseAt: Double? = nil
 var compare: (String, String)? = nil, tolerance = 0
 var form = 5.0, hold = 5.0, fade = 7.0, density = 0.5, pause = 1.0, symbol: SkySymbol? = nil, size = 0.32, symbolSheet: String? = nil
@@ -57,7 +57,7 @@ while !args.isEmpty {
     case "--direction": opts.direction = value() == "right" ? .right : .left
     case "--text": shapeText = value()                 // start forming this text at time 0
     case "--heart": heart = true                        // start forming a heart at time 0 (same path as the demos)
-    case "--shape-x": shapeX = Double(value()) ?? 0.5   // where the shape sits (0…1 of the view width)
+    case "--shape-x": shapeX = Double(value())   // where the shape sits (0…1 of the view width; the cloud there is preferred)
     case "--form": form = Double(value()) ?? form
     case "--hold": hold = Double(value()) ?? hold
     case "--fade": fade = Double(value()) ?? fade

@@ -71,6 +71,7 @@ public final class SkyRenderer {
         var startAt: Double? = nil        // start forming then (the previous shape's end + pause)
         var from: Shape? = nil            // turn straight from this shape (pause 0)
         var asap = false                  // (taking over) turn from the current shape as soon as it has formed, not after its hold
+        var spot = false                  // x or y was asked for: strongly prefer the cloud right there
     }
     private var planes: [Plane] = []
     private var nextPlane = 8.0
@@ -415,17 +416,18 @@ public final class SkyRenderer {
     /// (word, cloud, next word, cloud, …); pause: seconds the cloud shows in between (0 = the current shape's outline
     /// turns straight into this one after its hold). Needs speed > 0: shapes form as the sky moves on.
     @discardableResult
-    public func showShape(_ source: SkyShapeSource, x: Double = 0.5, y: Double = 0.6, size: Double = 0.32,
+    public func showShape(_ source: SkyShapeSource, x: Double? = nil, y: Double? = nil, size: Double = 0.32,
                           form: Double = 5, hold: Double = 5, fade: Double = 7, density: Double = 0.5, queue: Bool = false, pause: Double = 1) -> Bool {
         guard let mask = ShapeMask.make(source) else { return false }
         return show(mask, label: source.label, x: x, y: y, size: size, form: form, hold: hold, fade: fade, density: density, queue: queue, pause: pause)
     }
     /// showShape with the mask already built (SkyController builds it off the main thread).
     @discardableResult
-    func show(_ mask: ShapeMask, label: String, x: Double, y: Double, size: Double,
+    func show(_ mask: ShapeMask, label: String, x: Double?, y: Double?, size: Double,
               form: Double, hold: Double, fade: Double, density: Double, queue: Bool, pause: Double) -> Bool {
         guard mask.silhouetteArea >= 1 else { return false }   // (a blank text or image: nothing to form)
-        let p = PendingShape(mask: mask, x: x, y: y, size: size, form: form, hold: hold, fade: fade, density: min(1, max(0, density)), pause: max(0, pause), label: label)
+        var p = PendingShape(mask: mask, x: x ?? 0.5, y: y ?? 0.6, size: size, form: form, hold: hold, fade: fade, density: min(1, max(0, density)), pause: max(0, pause), label: label)
+        p.spot = x != nil || y != nil
         if queue && (shape != nil || pendingShape != nil || !shapeQueue.isEmpty) { shapeQueue.append(p); return true }
         shapeQueue.removeAll()
         if layers.count == 2 { takeOver(p) } else { pendingShape = p }
@@ -488,7 +490,7 @@ public final class SkyRenderer {
         let fits = 2 * hw + 0.06 < vw
         let allowed = SIMD4(fits ? scroll + hw + 0.03 : scroll + vw / 2, hh + 0.03, fits ? scroll + vw - hw - 0.03 : scroll + vw / 2, viewH - hh - 0.03)
         let found = from != nil ? nil : cloudNear(x: p.near?.x ?? cx, y: p.near?.y ?? cy, need: p.mask.silhouetteArea * k * k, times: [t0, tMid, tEnd],
-                                                  x0: min(s0, s1) - 0.3, x1: max(s0, s1) + vw + 0.3, allowed: allowed, box: SIMD2(hw, hh), same: p.near != nil)
+                                                  x0: min(s0, s1) - 0.3, x1: max(s0, s1) + vw + 0.3, allowed: allowed, box: SIMD2(hw, hh), same: p.near != nil || p.spot)
         if let from { cx = from.rect.x + from.rect.z / 2; cy = from.rect.y + from.rect.w / 2 }   // right where the previous shape is
         else if let found { cx = found.centre.x; cy = found.centre.y }
         if from != nil || found != nil {

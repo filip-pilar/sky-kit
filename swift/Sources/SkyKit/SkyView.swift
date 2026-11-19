@@ -21,7 +21,7 @@ public final class SkyController: ObservableObject {
     /// A real cloud nearby reshapes into a shape, holds it, then reshapes back into itself. density 0…1
     /// (0.5 = like the clouds around); queue: form after the current shape, on the same cloud, `pause` seconds after it
     /// has melted (0 = its outline turns straight into this one). Needs speed > 0. The shape is built in the background.
-    public func showShape(_ source: SkyShapeSource, x: Double = 0.5, y: Double = 0.6, size: Double = 0.32,
+    public func showShape(_ source: SkyShapeSource, x: Double? = nil, y: Double? = nil, size: Double = 0.32,
                           form: Double = 5, hold: Double = 5, fade: Double = 7, density: Double = 0.5, queue: Bool = false, pause: Double = 1) {
         if !queue { ticket += 1 }
         let t = ticket, label = source.label
