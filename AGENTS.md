@@ -28,3 +28,8 @@ Change both ports together, with matching comments. Functions shared by name (`f
 - Verify changes yourself (renders, measurements, headless checks); don't ask the user to test by hand.
 - Never call the cloud shader's noise on an absolute cloud-space position: each `fbm`/`billow` call is a chain with its large part in `noiseOrigins` (both ports), so a new noise call means a new chain there. Positions sent to the shader are relative to the draw's x origin.
 - Tests: only what the scenes can't see. Add a scene to `scripts/regress.ts` rather than a unit test where a render shows it.
+- Verifying, without overdoing it:
+  - `bun run regress` once after a change and once before committing, not after every step; again only if something failed or the shaders changed.
+  - Measure before you build: if a feature or fix might not matter, check its effect with a quick throwaway test first, and only then add it to both ports and the docs.
+  - GPU timing is noisy on this Mac: run old and new back to back once or twice; if the difference is inside the noise, say so and move on.
+  - Edge cases that need unusual conditions (like running for weeks): first say how likely they are and what the fix would cost, and let the user choose between "fix" and "just document it".
