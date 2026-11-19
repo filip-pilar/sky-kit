@@ -140,7 +140,7 @@ function Hero() {
 ### Other frameworks
 
 - **Anything with a DOM element** (Vue, Svelte, Solid, Angular, web components): call `createSky(el, options)` once the element is mounted (`onMounted`, `onMount`, `ngAfterViewInit`, `connectedCallback`) and `sky.destroy()` when it unmounts. No wrapper is needed. Give `el` a size; the sky fills it.
-- **React Native:** there is no native module. Show the web version in [`react-native-webview`](https://github.com/react-native-webview/react-native-webview) (it uses WKWebView on iOS and Android System WebView, both with WebGL2) and drive it with `injectJavaScript`. Checked with this snippet in a WKWebView driven the way react-native-webview drives it (on iOS it is a WKWebView): the module loads from jsDelivr and `injectJavaScript` forms words. Not checked inside an actual React Native app or on Android. For an iOS-only app, the Swift port in a native view is smoother.
+- **React Native:** there is no native module. Show the web version in [`react-native-webview`](https://github.com/react-native-webview/react-native-webview) (it uses WKWebView on iOS and Android System WebView, both with WebGL2) and drive it with `injectJavaScript`. Checked with this snippet in a macOS WKWebView (the engine react-native-webview uses on iOS), driven the way react-native-webview drives it: the module loads from jsDelivr and `injectJavaScript` forms words. Not checked inside an actual React Native app or on Android. For an iOS-only app, the Swift port in a native view is smoother.
 
 ```jsx
 import { WebView } from 'react-native-webview';
