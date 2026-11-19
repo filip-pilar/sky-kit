@@ -76,10 +76,13 @@ for (const s of SCENES) {
   run(skyRender, [...f, '--out', join(outDir, 'swift', s.name + '.png')]);
 }
 
-// Web: serve the repo, render every scene in one headless Chrome page, decode the PNGs it prints
+// Web: serve the repo, render every scene in one headless Chrome page, decode the PNGs it posts back
+let gotResult: (text: string) => void;
+const result = new Promise<string>(r => { gotResult = r; });
 const server = Bun.serve({
   port: 0,
-  fetch(req) {
+  async fetch(req) {
+    if (req.method === 'POST' && new URL(req.url).pathname === '/result') { gotResult(await req.text()); return new Response('ok'); }
     const path = join(root, decodeURIComponent(new URL(req.url).pathname));
     return path.startsWith(root) && existsSync(path) ? new Response(Bun.file(path)) : new Response('not found', { status: 404 });
   },
@@ -87,18 +90,23 @@ const server = Bun.serve({
 const chrome = process.env.CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const profile = join(outDir, 'chrome-profile');
 const url = `http://127.0.0.1:${server.port}/web/test/regress.html?scenes=${encodeURIComponent(JSON.stringify(SCENES))}`;
-// (spawned asynchronously: a blocking spawn would also block the server Chrome loads the page from)
+// (real time, not virtual time: the shapes are built in a worker, which virtual time doesn't wait for)
 const browser = Bun.spawn([chrome, '--headless=new', `--user-data-dir=${profile}`, '--no-first-run', '--use-angle=metal', '--enable-gpu',
-  '--ignore-gpu-blocklist', '--window-size=800,500', '--force-device-scale-factor=2', '--virtual-time-budget=600000', '--dump-dom', url],
-  { stdout: 'pipe', stderr: 'ignore' });
-const dom = await new Response(browser.stdout).text();
+  '--ignore-gpu-blocklist', '--window-size=800,500', '--force-device-scale-factor=2', url], { stdout: 'ignore', stderr: 'ignore' });
+let timer: Timer | undefined;
+const out = await Promise.race([result, browser.exited.then(() => ''), new Promise<string>(r => { timer = setTimeout(() => r(''), 600_000); })]);
+clearTimeout(timer);
+browser.kill();
 await browser.exited;
 server.stop(true);
 rmSync(profile, { recursive: true, force: true });
-const out = dom.match(/<pre id="out">([\s\S]*?)<\/pre>/)?.[1] ?? '';
 let written = 0;
 for (const line of out.trim().split('\n')) {
-  const [name, dataUrl] = line.split(' ');
+  const [name, dataUrl, extra] = line.split(' ');
+  if (name === '#workers') {   // shape workers started, and errors in them (a failing worker falls back silently)
+    if (dataUrl === '0' || extra !== '0') { console.error(`shape worker: ${dataUrl} started, ${extra} failed`); process.exit(1); }
+    continue;
+  }
   if (!dataUrl?.startsWith('data:image/png;base64,')) { console.error('no image for', name); process.exit(1); }
   writeFileSync(join(outDir, 'web', name + '.png'), Buffer.from(dataUrl.slice(22), 'base64'));
   written++;

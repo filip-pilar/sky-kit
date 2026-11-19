@@ -333,7 +333,7 @@ const hex = h => {   // '#rrggbb', 'rrggbb' or '#rgb'
   if (h.length === 3) h = [...h].map(c => c + c).join('');
   return [0, 2, 4].map(i => (parseInt(h.slice(i, i + 2), 16) || 0) / 255);
 };
-const smooth01 = x => { const t = Math.min(Math.max(x, 0), 1); return t * t * (3 - 2 * t); };
+function smooth01(x) { const t = Math.min(Math.max(x, 0), 1); return t * t * (3 - 2 * t); }
 
 /** White silhouette of text or an image on a transparent canvas (shape is `px` tall). */
 function silhouette(src, px) {
@@ -551,6 +551,82 @@ function findCloud(grid, gw, gh, ox, oy, step, wx, wy, need, allowed, box, same 
   return best ? { ...best, label } : null;
 }
 /**
+ * The cloud a shape is placed on, from the cloud maps (`maps`: RGBA, gw × gh, one after another, for the moments the
+ * shape starts forming, holds and ends): findCloud on the first, then the map of that cloud (sourceCells, as RGBA
+ * in R), grown into where any cloud reaches in the others. The spot is clamped to `allowed` as placeShape does.
+ */
+function pickCloud(maps, gw, gh, x0, y0, step, x, y, need, allowed, box, same) {
+  const n = gw * gh, grid = new Uint8Array(n), later = new Uint8Array(n);
+  for (let m = 0; m * n * 4 < maps.length; m++) {
+    for (let i = 0; i < n; i++) { const a = maps[(m * n + i) * 4 + 3]; if (m === 0) grid[i] = a; later[i] = Math.max(later[i], a); }
+  }
+  const best = findCloud(grid, gw, gh, x0, y0, step, x, y, need, allowed, box, same);
+  if (!best) return null;
+  const cx = Math.min(Math.max(best.x, allowed[0]), allowed[2]), cy = Math.min(Math.max(best.y, allowed[1]), allowed[3]);
+  const mine = sourceCells(best.label, best.comp, later, gw, gh, (cx - x0) / step, (cy - y0) / step, box[0] / step, box[1] / step, step);
+  const mask = new Uint8Array(n * 4);
+  for (let i = 0; i < n; i++) mask[i * 4] = mine[i];
+  return { x: cx, y: cy, mask };
+}
+/**
+ * The shape's mask (see buildShapeImage) from its silhouette's coverage `alpha` (w × h, the silhouette silW × silH
+ * at (pad, pad), px pixels per silhouette height): RGBA rows bottom-up (GL texture order), how solid it is and its
+ * area. Yields between steps (on the main thread the sky animates in between).
+ */
+function* maskChannels(alpha, w, h, silW, silH, pad, px) {
+  const ms = px / 220;   // the blur radii below are for a 220 px silhouette
+  // the narrower blurs reach at most ~0.6 silhouette heights: blur only that box (same result, much less work)
+  const m4 = v => Math.max(0, Math.floor(v / 4) * 4), bm = Math.round(silH * 0.75);
+  const bx0 = m4(pad - bm), by0 = m4(pad - bm), bx1 = Math.min(w, pad + silW + bm), by1 = Math.min(h, pad + silH + bm);
+  const body = blurIn(alpha, w, h, 70 * ms, 2, bx0, by0, bx1, by1);                                       // the shape's domed body
+  // 0 = thin strokes (text) … 1 = a solid shape (a heart, an emoji): solid shapes get softer edges
+  let bodyMax = 0; for (let i = 0; i < w * h; i++) bodyMax = Math.max(bodyMax, body[i]);
+  const thick = Math.min(1, Math.max(0, (bodyMax / 255 - 0.6) / 0.3));
+  yield;
+  // the shape itself, from the distance to its edge (only the box can be near it)
+  const bw = bx1 - bx0, bh = by1 - by0, sub = new Float32Array(bw * bh);
+  for (let y = 0; y < bh; y++) sub.set(alpha.subarray((y + by0) * w + bx0, (y + by0) * w + bx1), y * bw);
+  const edge = edgeChannel(sub, bw, bh, (5.6 + 2.5 * thick) * px / 100, 4 * px / 100), near = new Float32Array(w * h);
+  for (let y = 0; y < bh; y++) near.set(edge.subarray(y * bw, (y + 1) * bw), (y + by0) * w + bx0);
+  yield;
+  const wide = blurIn(alpha, w, h, 44 * ms, 2, bx0, by0, bx1, by1);
+  // the wide area (A): a very wide blur, flattened (square root) so it reaches well out, ~1 at the shape, and faded to exactly 0
+  // over the outer part of the margin (it times a morph, which must not change at the mask's edge)
+  yield;
+  const far = blurAt(alpha, w, h, silH * 1.2, 4);
+  let farMax = 0; for (let i = 0; i < w * h; i++) farMax = Math.max(farMax, far[i]);
+  yield;
+  const win = d => smooth01((d - 0.17 * pad) / (0.28 * pad));   // all-zero over the outer 17% (wider than the patch's blend)
+  const winX = new Float32Array(w); for (let x = 0; x < w; x++) winX[x] = win(Math.min(x, w - 1 - x));
+  const farK = 1 / Math.max(1e-3, farMax);
+  const data = new Uint8Array(w * h * 4);
+  for (let y = 0; y < h; y++) {                 // write rows bottom-up (GL texture order)
+    const wy = win(Math.min(y, h - 1 - y)), sy = h - 1 - y, row = sy * w, inBox = sy >= by0 && sy < by1;
+    for (let x = 0; x < w; x++) {
+      const s = row + x, d = (y * w + x) * 4;
+      if (inBox && x >= bx0 && x < bx1) {       // the narrower blurs are zero outside their box
+        data[d] = Math.min(255, near[s]);
+        data[d + 1] = Math.min(255, wide[s] * 1.4);
+        data[d + 2] = Math.min(255, body[s]);
+      }
+      data[d + 3] = Math.round(255 * Math.min(1, 1.2 * Math.sqrt(far[s] * farK)) * wy * winX[x]);
+    }
+  }
+  let area = 0; for (let i = 0; i < w * h; i++) area += alpha[i];
+  return { data, thick, area: area / 255 };   // area in mask pixels
+}
+// The shape math runs in a worker made from these same functions (nothing extra to ship or bundle), so the sky keeps
+// animating while a shape is prepared (in Swift it runs on a background queue). The source is taken from the
+// functions themselves, so it stays right in a minified bundle too.
+const WORKER_FNS = [smooth01, blurAlpha, blurAt, blurIn, edt, edgeChannel, findCloud, sourceCells, pickCloud, maskChannels];
+const workerSource = () => `${WORKER_FNS.join('\n')}
+const jobs = { ${pickCloud.name}, ${maskChannels.name} };
+onmessage = e => {
+  let r = jobs[e.data.fn](...e.data.args);
+  if (r && typeof r.next === 'function') { let s; while (!(s = r.next()).done); r = s.value; }
+  postMessage({ id: e.data.id, r }, r ? Object.values(r).filter(v => ArrayBuffer.isView(v)).map(v => v.buffer) : []);
+};`;
+/**
  * Built-in symbols for showShape({ symbol }) (port: SkySymbol.swift; keep the two identical). Each is a box
  * (x, y, width, height in its own units, about 100 tall) and parts: [kind, 'path', d] (absolute M L H V C Q Z only),
  * [kind, 'circle', cx, cy, r] or [kind, 'ellipse', cx, cy, rx, ry, degrees], kind 'fill' or 'line' (14 wide, round).
@@ -609,6 +685,8 @@ export function createSky(container, options = {}) {
   let leadBuilding = 0;           // non-queued showShape calls still building their image (the queue waits for them)
   let lastCloud = null;           // where the last shape's cloud was (the next queued shape forms on it)
   let lastEnd = 0;                // when it finished melting (a queued shape's pause counts from there)
+  let placing = null;             // a shape waiting for its cloud (cloudNear)
+  let stepping = false;           // in _step: no waiting for anything
   let markReady;
   const ready = new Promise(r => { markReady = r; });   // the first frame has set the sky up
   const reduceMotion = window.matchMedia ? matchMedia('(prefers-reduced-motion: reduce)') : null;
@@ -651,6 +729,7 @@ export function createSky(container, options = {}) {
     if (shape) { uploadShape(shape.image); shape.patch = null; shape.patchReady = false; shape.src = null; shape.prev = null; shape.area = shape.rect; }   // old GPU objects are gone
     layers = LAYERS.map(L => ({ ...L, snaps: null }));
     needsSetup = true;
+    if (placing) { placing = null; placeNext(); }   // (its GPU objects are gone with the old context)
   }
   function makeSnap(L) {
     const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
@@ -816,59 +895,48 @@ export function createSky(container, options = {}) {
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, img.width, img.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, img.data);   // rows already bottom-up
     texParams();
   }
-  // The mask is built at 100 px per silhouette height (it is soft anyway; the blur radii below are for
-  // 220 px, scaled); it yields between steps so the sky keeps animating meanwhile.
-  const MASK_PX = 100, MS = MASK_PX / 220;
+  // The mask is built at 100 px per silhouette height (it is soft anyway), in the shape worker.
+  const MASK_PX = 100;
   // a message, not a timer: background tabs hold timers back (up to a minute), and timers have a 4 ms minimum
   const breathe = () => new Promise(r => { const c = new MessageChannel(); c.port1.onmessage = () => { c.port1.close(); r(); }; c.port2.postMessage(0); });
-  async function buildShapeImage(src) {
-    const sil = silhouette(src, MASK_PX);
-    const pad = Math.round(sil.height * 2.2);       // room for the wide area (A)
-    const w = sil.width + pad * 2, h = sil.height + pad * 2;
-    const c = document.createElement('canvas'); c.width = w; c.height = h;
-    const cx = c.getContext('2d', { willReadFrequently: true }); cx.drawImage(sil, pad, pad);
-    const px = cx.getImageData(0, 0, w, h).data, alpha = new Float32Array(w * h);
-    for (let i = 0; i < w * h; i++) alpha[i] = px[i * 4 + 3];
-    await breathe();
-    // the narrower blurs reach at most ~0.6 silhouette heights: blur only that box (same result, much less work)
-    const m4 = v => Math.max(0, Math.floor(v / 4) * 4), bm = Math.round(sil.height * 0.75);
-    const bx0 = m4(pad - bm), by0 = m4(pad - bm), bx1 = Math.min(w, pad + sil.width + bm), by1 = Math.min(h, pad + sil.height + bm);
-    const body = blurIn(alpha, w, h, 70 * MS, 2, bx0, by0, bx1, by1);                                       // the shape's domed body
-    // 0 = thin strokes (text) … 1 = a solid shape (a heart, an emoji): solid shapes get softer edges
-    let bodyMax = 0; for (let i = 0; i < w * h; i++) bodyMax = Math.max(bodyMax, body[i]);
-    const thick = Math.min(1, Math.max(0, (bodyMax / 255 - 0.6) / 0.3));
-    await breathe();
-    // the shape itself, from the distance to its edge (only the box can be near it)
-    const bw = bx1 - bx0, bh = by1 - by0, sub = new Float32Array(bw * bh);
-    for (let y = 0; y < bh; y++) sub.set(alpha.subarray((y + by0) * w + bx0, (y + by0) * w + bx1), y * bw);
-    const edge = edgeChannel(sub, bw, bh, (5.6 + 2.5 * thick) * MASK_PX / 100, 4 * MASK_PX / 100), near = new Float32Array(w * h);
-    for (let y = 0; y < bh; y++) near.set(edge.subarray(y * bw, (y + 1) * bw), (y + by0) * w + bx0);
-    await breathe();
-    const wide = blurIn(alpha, w, h, 44 * MS, 2, bx0, by0, bx1, by1);
-    // the wide area (A): a very wide blur, flattened (square root) so it reaches well out, ~1 at the shape, and faded to exactly 0
-    // over the outer part of the margin (it times a morph, which must not change at the mask's edge)
-    await breathe();
-    const far = blurAt(alpha, w, h, sil.height * 1.2, 4);
-    let farMax = 0; for (let i = 0; i < w * h; i++) farMax = Math.max(farMax, far[i]);
-    await breathe();
-    const win = d => smooth01((d - 0.17 * pad) / (0.28 * pad));   // all-zero over the outer 17% (wider than the patch's blend)
-    const winX = new Float32Array(w); for (let x = 0; x < w; x++) winX[x] = win(Math.min(x, w - 1 - x));
-    const farK = 1 / Math.max(1e-3, farMax);
-    const data = new Uint8Array(w * h * 4);
-    for (let y = 0; y < h; y++) {                 // write rows bottom-up (GL texture order)
-      const wy = win(Math.min(y, h - 1 - y)), sy = h - 1 - y, row = sy * w, inBox = sy >= by0 && sy < by1;
-      for (let x = 0; x < w; x++) {
-        const s = row + x, d = (y * w + x) * 4;
-        if (inBox && x >= bx0 && x < bx1) {       // the narrower blurs are zero outside their box
-          data[d] = Math.min(255, near[s]);
-          data[d + 1] = Math.min(255, wide[s] * 1.4);
-          data[d + 2] = Math.min(255, body[s]);
-        }
-        data[d + 3] = Math.round(255 * Math.min(1, 1.2 * Math.sqrt(far[s] * farK)) * wy * winX[x]);
-      }
+  let worker = null, workerUrl = null, workerOff = false, jobId = 0;
+  const jobs = new Map();         // jobs sent to the worker: id → { fn, args, resolve }
+  // one of WORKER_FNS's jobs, in the worker; where workers can't start (say, a strict Content-Security-Policy),
+  // here, yielding between steps
+  async function runJob(fn, args) {
+    if (!worker && !workerOff && typeof Worker !== 'undefined') {
+      try {
+        workerUrl = URL.createObjectURL(new Blob([workerSource()], { type: 'text/javascript' }));
+        worker = new Worker(workerUrl);
+        worker.onmessage = e => { const j = jobs.get(e.data.id); jobs.delete(e.data.id); j?.resolve(e.data.r); };
+        worker.onerror = e => {
+          e.preventDefault();
+          workerOff = true; worker.terminate(); worker = null;
+          const left = [...jobs.values()]; jobs.clear();
+          for (const j of left) runHere(j.fn, j.args).then(j.resolve, j.reject);
+        };
+      } catch { workerOff = true; worker = null; }
     }
-    let area = 0; for (let i = 0; i < w * h; i++) area += alpha[i];
-    return { width: w, height: h, data, silH: sil.height, silW: sil.width, pad, thick, area: area / 255 };   // area in mask pixels
+    if (!worker) return runHere(fn, args);
+    return new Promise((resolve, reject) => {
+      const id = ++jobId;
+      jobs.set(id, { fn, args, resolve, reject });
+      worker.postMessage({ id, fn: fn.name, args });   // (copied, not moved: if the worker fails, the job runs here)
+    });
+  }
+  async function runHere(fn, args) {
+    const r = fn(...args);
+    if (!r || typeof r.next !== 'function') return r;
+    for (;;) { await breathe(); const s = r.next(); if (s.done) return s.value; }
+  }
+  async function buildShapeImage(src) {
+    const sil = silhouette(src, MASK_PX), sw = sil.width, sh = sil.height;
+    const pad = Math.round(sh * 2.2);               // room for the wide area (A)
+    const w = sw + pad * 2, h = sh + pad * 2;
+    const px = sil.getContext('2d').getImageData(0, 0, sw, sh).data, alpha = new Float32Array(w * h);
+    for (let y = 0; y < sh; y++) for (let x = 0; x < sw; x++) alpha[(y + pad) * w + x + pad] = px[(y * sw + x) * 4 + 3];
+    const m = await runJob(maskChannels, [alpha, w, h, sw, sh, pad, MASK_PX]);
+    return m && { width: w, height: h, data: m.data, silH: sh, silW: sw, pad, thick: m.thick, area: m.area };
   }
   // o._from: turn straight from that shape (same cloud, same spot); o._near: form on the cloud there (the previous
   // shape's); o._t0: start forming then (a queued shape's pause); o._asap: (taking over) turn from the current shape
@@ -891,63 +959,96 @@ export function createSky(container, options = {}) {
     const tEnd = t0 + form + holdP + fade, s0 = dir() * N.speed * t0, s1 = dir() * N.speed * tEnd;
     const fits = 2 * hw + 0.06 < vw;
     const allowed = [fits ? scroll + hw + 0.03 : scroll + vw / 2, hh + 0.03, fits ? scroll + vw - hw - 0.03 : scroll + vw / 2, viewH - hh - 0.03];
-    const found = from ? null : cloudNear(o._near ? o._near[0] : cx, o._near ? o._near[1] : cy, img.area * k * k, [t0, tMid, tEnd],
-                                          Math.min(s0, s1) - 0.3, Math.max(s0, s1) + vw + 0.3, allowed, [hw, hh], !!o._near);
-    if (from) { cx = from.rect[0] + from.rect[2] / 2; cy = from.rect[1] + from.rect[3] / 2; }   // right where the previous shape is
-    else if (found) { cx = found.x; cy = found.y; }
-    if (from || found) {
-      cx = Math.min(Math.max(cx, allowed[0]), allowed[2]);
-      cy = Math.min(Math.max(cy, allowed[1]), allowed[3]);
-    }
-    const rect = [cx - wUnits / 2, cy - hUnits / 2, wUnits, hUnits];
-    let src = found ? found.src : null, cloudAt = found ? [found.x, found.y] : [cx, cy], prev = null, area = rect, blend = 0.15 * img.pad * hUnits / img.height;
-    if (from) {
-      // the previous shape's cloud and mask carry over: its outline turns into this one's
-      src = from.src; from.src = null; cloudAt = from.cloudAt;
-      prev = { rect: from.rect, thick: from.thick };
-      [prevTex, shapeTex] = [shapeTex, prevTex];
-      const r = from.rect;
-      area = [Math.min(r[0], rect[0]), Math.min(r[1], rect[1]), 0, 0];
-      area[2] = Math.max(r[0] + r[2], rect[0] + rect[2]) - area[0]; area[3] = Math.max(r[1] + r[3], rect[1] + rect[3]) - area[1];
-      blend = Math.min(blend, from.fade_);
-    }
-    freeShape();
-    shape = { image: img, rect, area, t0, form, hold, fade, patch: null, patchReady: false, label: o.text ?? o.symbol ?? 'image', relAt: null,
-              thick: img.thick, fade_: blend,   // blend border: inside the masks' all-zero margins
-              density: Math.min(1, Math.max(0, o.density ?? 0.5)), src, cloudAt, prev };
-    uploadShape(img);
-    redraw();
+    const settle = found => {
+      if (from) { cx = from.rect[0] + from.rect[2] / 2; cy = from.rect[1] + from.rect[3] / 2; }   // right where the previous shape is
+      else if (found) { cx = found.x; cy = found.y; }
+      if (from || found) {
+        cx = Math.min(Math.max(cx, allowed[0]), allowed[2]);
+        cy = Math.min(Math.max(cy, allowed[1]), allowed[3]);
+      }
+      const rect = [cx - wUnits / 2, cy - hUnits / 2, wUnits, hUnits];
+      let src = found ? found.src : null, cloudAt = found ? [found.x, found.y] : [cx, cy], prev = null, area = rect, blend = 0.15 * img.pad * hUnits / img.height;
+      if (from) {
+        // the previous shape's cloud and mask carry over: its outline turns into this one's
+        src = from.src; from.src = null; cloudAt = from.cloudAt;
+        prev = { rect: from.rect, thick: from.thick };
+        [prevTex, shapeTex] = [shapeTex, prevTex];
+        const r = from.rect;
+        area = [Math.min(r[0], rect[0]), Math.min(r[1], rect[1]), 0, 0];
+        area[2] = Math.max(r[0] + r[2], rect[0] + rect[2]) - area[0]; area[3] = Math.max(r[1] + r[3], rect[1] + rect[3]) - area[1];
+        blend = Math.min(blend, from.fade_);
+      }
+      freeShape();
+      shape = { image: img, rect, area, t0, form, hold, fade, patch: null, patchReady: false, label: o.text ?? o.symbol ?? 'image', relAt: null,
+                thick: img.thick, fade_: blend,   // blend border: inside the masks' all-zero margins
+                density: Math.min(1, Math.max(0, o.density ?? 0.5)), src, cloudAt, prev };
+      uploadShape(img);
+      redraw();
+    };
+    if (from) settle(null);
+    else cloudNear(o._near ? o._near[0] : cx, o._near ? o._near[1] : cy, img.area * k * k, [t0, tMid, tEnd],
+                   Math.min(s0, s1) - 0.3, Math.max(s0, s1) + vw + 0.3, allowed, [hw, hh], !!o._near, settle);
   }
-  // the cloud to put a shape on (findCloud), from a map of the near clouds over x0..x1 (all that is on screen
-  // while the shape lives) at the moment it starts forming, times[0]; plus a map of that cloud, grown a little
-  // into where it reaches later on (times), so only that cloud gives way
-  function cloudNear(x, y, need, times, x0, x1, allowed, box, same) {
+  // the cloud to put a shape on (pickCloud), from maps of the near clouds over x0..x1 (all that is on screen while
+  // the shape lives) at the moments it starts forming, holds and ends; done(found or null). The maps are read back
+  // without making the GPU catch up (the shape starts forming 0.2 s later anyway) and the cloud is picked in the
+  // shape worker; while _step runs, all of it happens right away.
+  function cloudNear(x, y, need, times, x0, x1, allowed, box, same, done) {
+    cancelPlacing();
     const step = 0.02, y0 = -0.02;
     const gw = Math.min(400, Math.ceil((x1 - x0) / step)), gh = Math.ceil((viewH + 0.04) / step);
-    if (gh <= 4 || !layers[1]) return null;
+    if (gh <= 4 || !layers[1]) { done(null); return; }
     const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gw, gh, 0, gl.RGBA, gl.UNSIGNED_BYTE, null); texParams();
     const fb = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
-    const grid = new Uint8Array(gw * gh), later = new Uint8Array(gw * gh), px = new Uint8Array(gw * gh * 4);
+    const bytes = gw * gh * 4, p = { maps: new Uint8Array(bytes * times.length), pbo: null, sync: null, picking: false,
+                                     gw, gh, x0, y0, step, args: [x, y, need, allowed, box, same], done };
+    if (!stepping) { p.pbo = gl.createBuffer(); gl.bindBuffer(gl.PIXEL_PACK_BUFFER, p.pbo); gl.bufferData(gl.PIXEL_PACK_BUFFER, p.maps.length, gl.STREAM_READ); }
     times.forEach((t, n) => {
       drawClouds(layers[1], fb, gw, gh, x0, y0, t, 0, null, 0, step);
       gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
-      gl.readPixels(0, 0, gw, gh, gl.RGBA, gl.UNSIGNED_BYTE, px);   // rows bottom-up
-      for (let i = 0; i < gw * gh; i++) { if (n === 0) grid[i] = px[i * 4 + 3]; later[i] = Math.max(later[i], px[i * 4 + 3]); }
+      if (p.pbo) gl.readPixels(0, 0, gw, gh, gl.RGBA, gl.UNSIGNED_BYTE, n * bytes);   // rows bottom-up
+      else gl.readPixels(0, 0, gw, gh, gl.RGBA, gl.UNSIGNED_BYTE, p.maps, n * bytes);
     });
     gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.deleteFramebuffer(fb); gl.deleteTexture(tex);
-    const best = findCloud(grid, gw, gh, x0, y0, step, x, y, need, allowed, box, same);
-    if (!best) return null;
-    // where the shape will sit (placeShape clamps it the same way)
-    const cx = Math.min(Math.max(best.x, allowed[0]), allowed[2]), cy = Math.min(Math.max(best.y, allowed[1]), allowed[3]);
-    const mine = sourceCells(best.label, best.comp, later, gw, gh, (cx - x0) / step, (cy - y0) / step, box[0] / step, box[1] / step, step);
-    const mask = new Uint8Array(gw * gh * 4);
-    for (let i = 0; i < gw * gh; i++) mask[i * 4] = mine[i];
-    const src = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, src);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gw, gh, 0, gl.RGBA, gl.UNSIGNED_BYTE, mask); texParams();
-    return { x: cx, y: cy, src: { tex: src, rect: [x0, y0, gw * step, gh * step] } };
+    placing = p;
+    if (p.pbo) {
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+      p.sync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0); gl.flush();
+      schedule();                                   // (frames check on it, even while paused)
+    } else pickNow(p);
   }
+  // a placement waiting for its maps: read them once the GPU has them (now, if `force`), then pick the cloud
+  function tendPlacing(force = false) {
+    const p = placing;
+    if (!p) return;
+    if (p.picking) { if (force) pickNow(p); return; }
+    if (!force && gl.getSyncParameter(p.sync, gl.SYNC_STATUS) !== gl.SIGNALED) return;
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, p.pbo); gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, p.maps); gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+    freePlacing(p);
+    if (force) { pickNow(p); return; }
+    p.picking = true;
+    runJob(pickCloud, [p.maps, p.gw, p.gh, p.x0, p.y0, p.step, ...p.args]).then(r => landPlacing(p, r), () => pickNow(p));
+  }
+  function pickNow(p) { landPlacing(p, pickCloud(p.maps, p.gw, p.gh, p.x0, p.y0, p.step, ...p.args)); }
+  function landPlacing(p, r) {
+    if (placing !== p || destroyed) return;         // dropped meanwhile (a newer shape, clearShape, ...), or done already
+    placing = null;
+    let found = null;
+    if (r) {
+      const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, p.gw, p.gh, 0, gl.RGBA, gl.UNSIGNED_BYTE, r.mask); texParams();
+      found = { x: r.x, y: r.y, src: { tex, rect: [p.x0, p.y0, p.gw * p.step, p.gh * p.step] } };
+    }
+    p.done(found);
+  }
+  function freePlacing(p) {
+    if (p.sync) gl.deleteSync(p.sync);
+    if (p.pbo) gl.deleteBuffer(p.pbo);
+    p.sync = p.pbo = null;
+  }
+  function cancelPlacing() { if (placing) { if (gl && !lost) freePlacing(placing); placing = null; } }
   function shapeUniforms(u) {
     const on = !!(shape && shape.patchReady);
     gl.uniform1f(u.uPatchOn, on ? 1 : 0);
@@ -974,6 +1075,7 @@ export function createSky(container, options = {}) {
     if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; needsSetup = true; }
     if (needsSetup) { setupCaches(); needsSetup = false; needsRebuild = false; markReady(); }
     if (needsRebuild) { rebuildAll(); needsRebuild = false; }
+    tendPlacing();
     if (moving) { const sdt = dt * effectiveSpeed(); simTime += sdt; updatePlanes(sdt); }
     for (const L of layers) advance(L);
     tendShape();
@@ -981,7 +1083,7 @@ export function createSky(container, options = {}) {
     framesDrawn++;
     if (framesDrawn <= 3) { const e = gl.getError(); if (e) lastGlError = e; }   // cheap check on the first frames only
     lastDraw = now; needsDraw = false;
-    if (moving) schedule();
+    if (moving || placing) schedule();
   }
   function composite() {
     const u = compProg.u;
@@ -1040,7 +1142,7 @@ export function createSky(container, options = {}) {
     else { shapeQueue.unshift({ img, o: { ...o, pause: 0, _asap: amt < 1 } }); placeNext(); }
   }
   function placeNext() {
-    if (shape || leadBuilding || !shapeQueue.length || !shapeQueue[0].img) return;
+    if (shape || placing || leadBuilding || destroyed || !shapeQueue.length || !shapeQueue[0].img) return;
     const next = shapeQueue.shift();
     placeShape(next.img, { ...next.o, _near: lastCloud, _t0: lastEnd + next.o.pause });
   }
@@ -1093,7 +1195,7 @@ export function createSky(container, options = {}) {
       o = cleanOptions(o);
       const resetup = RESETUP_KEYS.some(k => k in o && o[k] !== S[k]);
       const rebuild = REBUILD_KEYS.some(k => k in o && o[k] !== S[k]);
-      if ('direction' in o && o.direction !== S.direction) { shapeTicket++; shapeQueue = []; freeShape(); }   // a placed shape belongs to the old drift
+      if ('direction' in o && o.direction !== S.direction) { shapeTicket++; shapeQueue = []; cancelPlacing(); freeShape(); }   // a placed shape belongs to the old drift
       Object.assign(S, o);
       if (resetup) needsSetup = true;
       else if (rebuild && layers[0]?.snaps) needsRebuild = true;
@@ -1125,7 +1227,7 @@ export function createSky(container, options = {}) {
       if (!src) return;
       if (!layers[0]?.snaps) { await ready; if (!layers[0]?.snaps) return; }   // (before the first frame: wait for it)
       o = { ...o, pause: Math.max(0, o.pause ?? 1) };
-      const queued = !!o.queue && (!!shape || shapeQueue.length > 0 || leadBuilding > 0);
+      const queued = !!o.queue && (!!shape || !!placing || shapeQueue.length > 0 || leadBuilding > 0);
       const slot = queued ? { img: null, o } : null;
       if (slot) shapeQueue.push(slot);                       // keeps call order while the images build
       else { shapeTicket++; shapeQueue = []; leadBuilding++; }
@@ -1141,13 +1243,13 @@ export function createSky(container, options = {}) {
       if (ticket !== shapeTicket || destroyed || !layers[0]?.snaps) return;
       if (slot) { slot.img = img; placeNext(); } else { takeOver(img, o); placeNext(); }
     },
-    clearShape() { shapeTicket++; shapeQueue = []; freeShape(); redraw(false); },
+    clearShape() { shapeTicket++; shapeQueue = []; cancelPlacing(); freeShape(); redraw(false); },
     /**
      * Melt the shape on screen back into its cloud now, from wherever it is (forming, holding, turning into the
      * next one), and drop the shapes waiting after it. Unlike clearShape, nothing jumps.
      */
     releaseShape() {
-      shapeTicket++; shapeQueue = [];
+      shapeTicket++; shapeQueue = []; cancelPlacing();
       if (!shape) return;
       const amt = shapeAmt(simTime), melt = shapeMelt(simTime);
       if (amt <= 0) { freeShape(); return; }                     // hadn't started yet: nothing to see
@@ -1161,25 +1263,34 @@ export function createSky(container, options = {}) {
      */
     get shapeState() {
       const next = shapeQueue.map(s => s.o.text ?? s.o.symbol ?? 'image');
-      if (!shape) return { phase: next.length || leadBuilding ? 'waiting' : 'none', label: null, next };
+      if (!shape) return { phase: next.length || leadBuilding || placing ? 'waiting' : 'none', label: null, next };
       const amt = shapeAmt(simTime), melt = shapeMelt(simTime);
       return { phase: amt <= 0 ? 'waiting' : melt > 0 ? 'melting' : amt < 1 ? 'forming' : 'holding', label: shape.label, next };
     },
     /** Testing aid: fast-forward sky time as if `seconds` passed at 30 fps, then draw. */
     _step(seconds) {
       if (!layers[0]?.snaps) return;
-      for (let i = 0, n = Math.round(seconds * 30); i < n; i++) {
-        const sdt = S.speed / 30; simTime += sdt; updatePlanes(sdt);
-        for (const L of layers) advance(L);
-        tendShape(false);                          // a shape that has melted makes way for the next, as frames would
-      }
-      tendShape();
-      composite();
+      stepping = true;
+      try {
+        tendPlacing(true);
+        for (let i = 0, n = Math.round(seconds * 30); i < n; i++) {
+          const sdt = S.speed / 30; simTime += sdt; updatePlanes(sdt);
+          for (const L of layers) advance(L);
+          tendShape(false);                        // a shape that has melted makes way for the next, as frames would
+        }
+        tendShape();
+        composite();
+      } finally { stepping = false; }
     },
     /** PNG data URL of the current frame (null before the first frame). */
     snapshot() { if (needsSetup || !layers[0]?.snaps) return null; composite(); return canvas.toDataURL('image/png'); },
     destroy() {
+      cancelPlacing();
       destroyed = true; if (raf) cancelAnimationFrame(raf); clearTimeout(fallbackTimer);
+      worker?.terminate(); worker = null; workerOff = true;
+      if (workerUrl) URL.revokeObjectURL(workerUrl);
+      for (const j of jobs.values()) j.resolve(null);   // (their showShape calls return)
+      jobs.clear();
       ro.disconnect(); io.disconnect(); document.removeEventListener('visibilitychange', onVis);
       reduceMotion?.removeEventListener?.('change', onMotionPref);
       dprQuery?.removeEventListener('change', onDpr);

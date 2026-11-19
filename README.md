@@ -135,7 +135,7 @@ Shapes: `sky-render --seconds 9 --symbol smile --out swift/out/swift-smile.png` 
 - WebGL2 is required on the web (all current browsers have it).
 - Shapes form as the sky moves; with `speed: 0` they don't appear.
 - One shape at a time; a new one takes over from the previous (see above), or waits for it with `queue: true`.
-- In Swift, `showShape` builds the shape on the calling thread (tens of milliseconds); the web version builds it in steps between frames.
+- In Swift, `SkyRenderer.showShape` builds the shape on the calling thread (tens of milliseconds; `SkyController` builds it in the background). The web version builds it in a Web Worker; where a Content-Security-Policy blocks `blob:` workers (`worker-src`), it builds on the main thread in steps between frames, and the sky can stutter for a moment when a shape starts.
 - Noise coordinates keep growing with sky time. After several days of continuous running at speed 1 the cloud shading could start to get grainy (float precision). Not a concern for normal sessions.
 
 ## Layout
