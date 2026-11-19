@@ -1,6 +1,6 @@
 # sky-kit
 
-Endless drifting painterly clouds on a bright blue sky, for the web (WebGL2, plain JS or React) and Apple platforms (Metal, SwiftUI). A real cloud can turn into a word, emoji or symbol, hold it, and melt back into itself, up to three at once. The web and Swift ports render the same image (mean difference about 0.13/255 per pixel).
+Endless drifting painterly clouds on a bright blue sky, for the web (WebGL2: plain JS, React or any framework) and Apple platforms (Metal, SwiftUI). A real cloud can turn into a word, emoji or symbol, hold it, and melt back into itself, up to three at once. The web and Swift ports render the same image (mean difference about 0.13/255 per pixel).
 
 Live demo, with the code for whatever you set: https://claude.ai/artifact/8YKLPNuAnkRtUnAR8u8f2e
 
@@ -137,6 +137,23 @@ function Hero() {
 - **The ref** exposes `flyPlane`, `showShape`, `releaseShape`, `clearShape`, `shapeState`, `shapeStates`, `pause`, `play`, `snapshot`, `canvas` and `options`.
 - **Compatibility:** React 17+, StrictMode and SSR (the sky is created in an effect). The wrapper has no JSX of its own.
 
+### Other frameworks
+
+- **Anything with a DOM element** (Vue, Svelte, Solid, Angular, web components): call `createSky(el, options)` once the element is mounted (`onMounted`, `onMount`, `ngAfterViewInit`, `connectedCallback`) and `sky.destroy()` when it unmounts. No wrapper is needed. Give `el` a size; the sky fills it.
+- **React Native:** there is no native module. Show the web version in [`react-native-webview`](https://github.com/react-native-webview/react-native-webview) (it uses WKWebView on iOS and Android System WebView, both with WebGL2) and drive it with `injectJavaScript`. This is not tested inside a React Native app. For an iOS-only app, the Swift port in a native view is smoother.
+
+```jsx
+import { WebView } from 'react-native-webview';
+
+const html = `<body style="margin:0"><div id="sky" style="position:fixed;inset:0"></div><script type="module">
+  import { createSky } from 'https://cdn.jsdelivr.net/gh/filip-pilar/sky-kit@v0.3.1/web/src/sky.js';
+  window.sky = createSky(document.getElementById('sky'));
+</script></body>`;
+
+// <WebView ref={web} source={{ html, baseUrl: 'https://localhost' }} style={{ flex: 1 }} />
+web.current.injectJavaScript(`sky.showShape(${JSON.stringify({ text: 'hi' })}); true;`);
+```
+
 ## Swift
 
 ```swift
@@ -162,7 +179,7 @@ struct ContentView: View {
 - **`SkyRenderer`** is the Metal renderer on its own, for custom views or offscreen use. `renderImage(width:height:seconds:)` returns a `CGImage`. Its own `showShape` builds the mask on the calling thread (tens of ms); `SkyController` builds it in the background.
 - **Command-line tools:**
   - `swift run -c release sky-render --seconds 9 --text hello --out sky.png` renders a still; its flags are at the top of `swift/Sources/sky-render/main.swift`.
-  - `swift run -c release SkyDemo` opens a macOS window with every control.
+  - `swift run -c release SkyDemo` opens a small macOS window (from a fresh clone, about 15 s to build, no dependencies; needs Swift 5.9+, from Xcode or the Command Line Tools): type words or pick a symbol, click a cloud to form it there; each click is a new id, so up to three are up at once.
 
 ## Known limits
 
@@ -179,7 +196,7 @@ web/src/react.js       React wrapper; *.d.ts are the typed API
 web/examples/          index (several sizes), playground (every option), react
 web/test/              regression scenes and behaviour checks, run by scripts/regress.ts
 swift/Sources/SkyKit   SkyView, SkyController, SkyRenderer, SkyOptions, Metal shaders, shape masks, symbols
-swift/Sources/         sky-render (CLI), SkyDemo (macOS app); swift/Tests/ unit tests
+swift/Sources/         sky-render (CLI), SkyDemo (macOS app); swift/Tests/ the two tests the scenes can't cover
 docs/ARCHITECTURE.md   how it works and why it is cheap
 AGENTS.md              working on the code: conventions, commands, how to verify a change
 ```

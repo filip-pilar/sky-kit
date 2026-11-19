@@ -1,4 +1,6 @@
-// A small macOS demo:  swift run SkyDemo
+// A small macOS demo of the Swift port:  swift run SkyDemo
+// Type words (commas chain them) and press Form, pick a symbol, or click a cloud to form them on it: each click uses
+// the next id, so up to three shapes are up at once.
 #if os(macOS)
 import SwiftUI
 import AppKit
@@ -13,126 +15,68 @@ struct SkyDemoApp: App {
         DispatchQueue.main.async { NSApplication.shared.activate(ignoringOtherApps: true) }
     }
     var body: some Scene {
-        WindowGroup("SkyKit demo") { DemoView().frame(minWidth: 720, minHeight: 560) }
+        WindowGroup("SkyKit demo") { DemoView().frame(minWidth: 640, minHeight: 480) }
     }
 }
 
 struct DemoView: View {
-    @State private var options = SkyOptions(planes: true)
     @StateObject private var sky = SkyController()
-    // words and shapes
     @State private var text = "hello, sky"
-    @State private var form = 5.0
-    @State private var hold = 5.0
-    @State private var melt = 7.0
-    @State private var pause = 1.0
-    @State private var density = 0.5
-    @State private var size = 0.3
-    @State private var loop = false
-    @State private var chain: [String] = []          // the words being shown, for Loop
-    @State private var state = SkyShapeState.idle
-    @State private var tab = Tab.word
-    enum Tab: String, CaseIterable { case word = "Word", sky = "Sky" }
-    private static let holdForever = 21.0             // the Hold slider's last step: hold until Stop
+    @State private var symbol: SkySymbol?            // the last symbol picked: clicks form it instead of the words
+    @State private var next = 1                       // clicks go round ids b, c, a, …
+    @State private var states: [String: SkyShapeState] = [:]
+    private let ids = ["a", "b", "c"]
     private let tick = Timer.publish(every: 0.25, on: .main, in: .common).autoconnect()
 
     var body: some View {
-        ZStack(alignment: .bottomLeading) {
-            SkyView(options, controller: sky).ignoresSafeArea()
-            panel
-                .padding(14)
-                .frame(width: 400)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
-                .padding(20)
+        ZStack(alignment: .bottom) {
+            SkyView(SkyOptions(planes: true), controller: sky).ignoresSafeArea()
+            GeometryReader { geo in   // (a clear layer takes the clicks; the Metal view underneath doesn't pass them on)
+                Color.clear.contentShape(Rectangle()).gesture(SpatialTapGesture().onEnded { click($0.location, in: geo.size) })
+            }
+            panel.padding(12).frame(width: 520).background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14)).padding(16)
         }
-        .onReceive(tick) { _ in
-            // Loop: queue the words again while the last one is up
-            let st = sky.shapeState
-            if loop, !chain.isEmpty, st.next.isEmpty, [.forming, .holding, .melting].contains(st.phase) { queue(chain, first: false) }
-            state = sky.shapeState
-        }
+        .onReceive(tick) { _ in states = sky.shapeStates }
+        .onAppear { form() }
     }
 
     private var panel: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack {
-                TextField("Words, separated by commas", text: $text).textFieldStyle(.roundedBorder).onSubmit(formWords)
-                Button("Form it", action: formWords).keyboardShortcut(.defaultAction)
-                // Stop: whatever is forming, holding or morphing melts back into its cloud now, and nothing queued follows
-                Button("Stop") { chain = []; sky.releaseShape() }.disabled(state.phase == .none)
-            }
-            HStack {
-                Text(status).font(.callout.weight(.semibold)).lineLimit(1).truncationMode(.tail)
-                Spacer()
-                Toggle("Loop", isOn: $loop).toggleStyle(.checkbox)
+                TextField("Words, separated by commas", text: $text).textFieldStyle(.roundedBorder).onSubmit { symbol = nil; form() }
+                Button("Form") { symbol = nil; form() }.keyboardShortcut(.defaultAction)
+                Button("Melt") { next = 0; sky.releaseShape() }.disabled(states.isEmpty)
             }
             HStack(spacing: 6) {
                 ForEach(SkySymbol.allCases, id: \.self) { s in
-                    Button { chain = []; sky.showShape(.symbol(s), size: size * 1.3, form: form, hold: holdValue, fade: melt, density: density) } label: {
-                        symbolIcon(s).frame(maxWidth: .infinity, minHeight: 26)
+                    Button { symbol = s; next = 1; sky.showShape(.symbol(s), size: 0.42, id: "a") } label: {
+                        if let img = s.image(height: 40) { Image(decorative: img, scale: 2).renderingMode(.template).frame(maxWidth: .infinity, minHeight: 24) }
                     }
                     .help(s.rawValue.capitalized)
-                    .accessibilityLabel(s.rawValue.capitalized)
                 }
             }
-            Picker("", selection: $tab) { ForEach(Tab.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
-                .pickerStyle(.segmented).labelsHidden()
-            if tab == .word {
-                slider("Form", $form, 1...15, step: 0.5) { "\(trim($0))s" }
-                slider("Hold", $hold, 0...Self.holdForever, step: 0.5) { $0 >= Self.holdForever ? "∞" : "\(trim($0))s" }
-                slider("Melt", $melt, 1...15, step: 0.5) { "\(trim($0))s" }
-                slider("Pause", $pause, 0...5, step: 0.5) { $0 == 0 ? "morph" : "\(trim($0))s" }
-                slider("Density", $density, 0...1, step: 0.05) { "\(Int(($0 * 100).rounded()))%" }
-                slider("Size", $size, 0.15...0.5, step: 0.01) { "\(Int(($0 * 100).rounded()))%" }
-                Text("Commas chain words. Pause 0 morphs one straight into the next; Hold ∞ keeps it until Stop.")
-                    .font(.caption).foregroundStyle(.secondary)
-            } else {
-                slider("Clouds", $options.coverage, 0...1, step: 0.01) { "\(Int(($0 * 100).rounded()))%" }
-                slider("Speed", $options.speed, 0...4, step: 0.05) { "\(trim($0))×" }
-                slider("Fade", $options.gradient, 0...1, step: 0.01) { "\(Int(($0 * 100).rounded()))%" }
-                Picker("Palette", selection: $options.palette) {
-                    ForEach(SkyOptions.Palette.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) }
-                }.pickerStyle(.segmented)
-                HStack {
-                    Toggle("Planes", isOn: $options.planes)
-                    Button("Fly a plane") { sky.flyPlane() }
-                }
-            }
+            Text(status).font(.callout.weight(.semibold)).lineLimit(1).truncationMode(.tail)
         }
     }
 
-    private var holdValue: Double { hold >= Self.holdForever ? .infinity : hold }
-    private func formWords() {
-        let words = text.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-        chain = words.isEmpty ? ["☁"] : words
-        queue(chain, first: true)   // the first takes over from whatever is on screen, without a jump
-    }
-    private func queue(_ words: [String], first: Bool) {
-        for (i, w) in words.enumerated() {
-            sky.showShape(.text(w), size: size, form: form, hold: holdValue, fade: melt, density: density, queue: !(first && i == 0), pause: pause)
+    private var words: [String] { text.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty } }
+    /// The words (or the last symbol) as id `id`, at a clicked point (x, y: 0…1 of the view, y up) or the default spot.
+    private func form(_ id: String = "a", at point: (x: Double, y: Double)? = nil) {
+        if id == "a" { next = 1 }
+        if let symbol { sky.showShape(.symbol(symbol), x: point?.x, y: point?.y, size: 0.42, id: id); return }
+        for (i, w) in (words.isEmpty ? ["☁"] : words).enumerated() {
+            sky.showShape(.text(w), x: point?.x, y: point?.y, queue: i > 0, id: id)
         }
+    }
+    private func click(_ p: CGPoint, in size: CGSize) {
+        let id = ids[next]; next = (next + 1) % ids.count
+        form(id, at: (Double(p.x / size.width), 1 - Double(p.y / size.height)))
     }
     private var status: String {
         let names: [SkyShapeState.Phase: String] = [.waiting: "Starting", .forming: "Forming", .holding: "Holding", .melting: "Melting back"]
-        guard state.phase != .none, let name = names[state.phase] else { return "Type words or pick a symbol" }
-        let quote = { (s: String) in s == "image" ? s : "“\(s)”" }
-        return name + (state.label.map { " " + quote($0) } ?? "") + (state.next.isEmpty ? "" : " · next: " + state.next.map(quote).joined(separator: ", "))
+        let parts = ids.compactMap { states[$0] }.compactMap { st in names[st.phase].map { $0 + (st.label.map { " “\($0)”" } ?? "") } }
+        return parts.isEmpty ? "Type words or pick a symbol, then click a cloud" : parts.joined(separator: "  ·  ")
     }
-    private func symbolIcon(_ s: SkySymbol) -> some View {
-        Group {
-            if let img = s.image(height: 40) { Image(decorative: img, scale: 2).renderingMode(.template) } else { Text(s.rawValue) }
-        }
-    }
-    private func slider(_ name: String, _ value: Binding<Double>, _ range: ClosedRange<Double>, step: Double,
-                        format: @escaping (Double) -> String) -> some View {
-        HStack {
-            Text(name).frame(width: 58, alignment: .leading)
-            // (rounded to the step by hand: a stepped Slider draws a tick for every step)
-            Slider(value: Binding(get: { value.wrappedValue }, set: { value.wrappedValue = ($0 / step).rounded() * step }), in: range)
-            Text(format(value.wrappedValue)).monospacedDigit().frame(width: 52, alignment: .trailing)
-        }
-    }
-    private func trim(_ v: Double) -> String { v == v.rounded() ? String(Int(v)) : String(format: "%.1f", v) }
 }
 #else
 // The window demo is macOS-only; on iOS use SkyView inside your own app.
