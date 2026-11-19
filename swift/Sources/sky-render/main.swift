@@ -4,7 +4,8 @@
 //   sky:     --seed N --coverage 0..1 --shadow 0..1 --palette day|summer|pastel --gradient 0..1 --scale 2 --direction left|right
 //   extras:  --plane; a shape formed from time 0: --text hello | --text one,two (chained) | --symbol star | --heart,
 //            at --shape-x 0..1, --size 0..1 (symbols), --form/--hold/--fade seconds, --hold-forever, --density 0..1,
-//            --pause seconds between chained words (0 = straight from one to the next), --release-at seconds
+//            --pause seconds between chained words (0 = straight from one to the next), --release-at seconds;
+//            more symbols at once, each with its own id: --also star@0.72 (repeatable)
 //   --symbol-sheet out.png draws the built-in symbols side by side
 //   --compare dirA dirB [--tolerance N] compares the PNGs of two folders pixel by pixel (exit 1 if any differs by more than N)
 import Foundation
@@ -18,6 +19,7 @@ var shapeText: String? = nil, plane = false, heart = false, shapeX: Double? = ni
 var releaseAt: Double? = nil
 var compare: (String, String)? = nil, tolerance = 0
 var form = 5.0, hold = 5.0, fade = 7.0, density = 0.5, pause = 1.0, symbol: SkySymbol? = nil, size = 0.32, symbolSheet: String? = nil
+var also: [(SkySymbol, Double)] = []
 
 /// The heart web/examples/parity.html uses (SVG path, viewBox 100×92), drawn at 220 px tall.
 func heartImage() -> CGImage? {
@@ -57,6 +59,9 @@ while !args.isEmpty {
     case "--direction": opts.direction = value() == "right" ? .right : .left
     case "--text": shapeText = value()                 // start forming this text at time 0
     case "--heart": heart = true                        // start forming a heart at time 0 (same path as the demos)
+    case "--also":   // symbol@x
+        let parts = value().split(separator: "@")
+        if parts.count == 2, let s = SkySymbol(rawValue: String(parts[0])), let x = Double(parts[1]) { also.append((s, x)) }
     case "--shape-x": shapeX = Double(value())   // where the shape sits (0…1 of the view width; the cloud there is preferred)
     case "--form": form = Double(value()) ?? form
     case "--hold": hold = Double(value()) ?? hold
@@ -130,6 +135,9 @@ do {
             FileHandle.standardError.write("could not build the symbol\n".data(using: .utf8)!)
         }
         if heart, let img = heartImage(), !r.showShape(.image(img), x: shapeX, size: 0.36, form: form, hold: hold, fade: fade, density: density) { FileHandle.standardError.write("could not build the heart\n".data(using: .utf8)!) }
+        for (i, (s, x)) in also.enumerated() where !r.showShape(.symbol(s), x: x, size: size, form: form, hold: hold, fade: fade, density: density, id: "also\(i)") {
+            FileHandle.standardError.write("could not build \(s)\n".data(using: .utf8)!)
+        }
         if plane { r.flyPlane(from: CGPoint(x: 0, y: 0.7), to: CGPoint(x: 1, y: 0.75)) }
     }, onFrame: { r, t in if let releaseAt, abs(t - releaseAt) < 0.5 / 30 { r.releaseShape() } })
     let url = URL(fileURLWithPath: out)

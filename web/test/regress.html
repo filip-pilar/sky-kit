@@ -31,12 +31,15 @@ for (const s of scenes) {
   const shape = { form: s.form, hold: s.holdForever ? Infinity : s.hold, fade: s.fade, density: s.density };
   if (s.plane) sky.flyPlane({ from: [0, 0.7], to: [1, 0.75] });
   const shown = [];   // (each resolves once its shape image is built)
-  if (s.words) s.words.forEach((text, i) => shown.push(sky.showShape({ text, ...shape, queue: i > 0, pause: s.pause })));
-  if (s.symbol) shown.push(sky.showShape({ symbol: s.symbol, ...shape, size: s.size }));
-  if (s.heart) shown.push(sky.showShape({ image: HEART, ...shape, size: 0.36 }));
+  if (s.words) s.words.forEach((text, i) => shown.push(sky.showShape({ text, ...shape, x: s.shapeX, queue: i > 0, pause: s.pause })));
+  if (s.symbol) shown.push(sky.showShape({ symbol: s.symbol, ...shape, x: s.shapeX, size: s.size }));
+  if (s.heart) shown.push(sky.showShape({ image: HEART, ...shape, x: s.shapeX, size: 0.36 }));
   await Promise.all(shown);
-  // let the first shape land the way it does live (maps read back after the GPU's fence, cloud picked in the worker)
-  for (const t = performance.now(); shown.length && !sky.shapeState.label && performance.now() - t < 5000;) await new Promise(r => setTimeout(r, 5));
+  // more shapes at once, each with its own id, one after the other (so they are placed in a fixed order)
+  for (const [i, [symbol, x]] of (s.also ?? []).entries()) await sky.showShape({ symbol, x, id: 'also' + i, ...shape, size: s.size });
+  // let the shapes land the way they do live (maps read back after the GPU's fence, cloud picked in the worker)
+  const landed = () => Object.values(sky.shapeStates).filter(st => st.label).length >= 1 + (s.also?.length ?? 0);
+  for (const t = performance.now(); shown.length && !landed() && performance.now() - t < 5000;) await new Promise(r => setTimeout(r, 5));
   if (s.releaseAt != null) { sky._step(s.releaseAt); sky.releaseShape(); sky._step(s.seconds - s.releaseAt); }
   else sky._step(s.seconds);
   lines.push(s.name + ' ' + sky.snapshot());

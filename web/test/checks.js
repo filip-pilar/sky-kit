@@ -51,6 +51,23 @@ async function checkMode(createSky, mode, out) {
   check('pause 0 turns one word into the next', await until(() => st().label === 'bb', 8000), JSON.stringify(st()));
   sky.clearShape();
 
+  // several shapes at once, each id with its own lane
+  const sts = () => sky.shapeStates;
+  await Promise.all([sky.showShape({ text: 'aa', id: 'a', x: 0.25, ...quick, hold: 20 }), sky.showShape({ text: 'bb', id: 'b', x: 0.75, ...quick, hold: 20 })]);
+  check('two ids are on screen together', await until(() => sts().a?.label === 'aa' && sts().b?.label === 'bb'), JSON.stringify(sts()));
+  sky.releaseShape('a');
+  check('releaseShape(id) melts only that one', await until(() => !sts().a) && sts().b?.label === 'bb', JSON.stringify(sts()));
+  await sky.showShape({ text: 'cc', id: 'c', ...quick, hold: 20 }); await sky.showShape({ text: 'dd', id: 'd', ...quick, hold: 20 });
+  await until(() => sts().c?.label === 'cc' && sts().d?.label === 'dd');
+  check('three ids at once', Object.keys(sts()).sort().join() === 'b,c,d', JSON.stringify(sts()));
+  await sky.showShape({ text: 'ee', id: 'e', ...quick, hold: 20 });   // (b was used longest ago)
+  await until(() => sts().e?.label === 'ee');
+  check('a 4th id takes over the one used longest ago', Object.keys(sts()).sort().join() === 'c,d,e', JSON.stringify(sts()));
+  sky.clearShape('c');
+  check('clearShape(id) removes only that one', !sts().c && sts().d?.label === 'dd' && sts().e?.label === 'ee', JSON.stringify(sts()));
+  sky.clearShape();
+  check('clearShape() removes all', Object.keys(sts()).length === 0, JSON.stringify(sts()));
+
   const pending = sky.showShape({ symbol: 'heart' });
   check('no GL errors', !sky.info.glError, 'glError ' + sky.info.glError);
   sky.destroy(); box.remove();

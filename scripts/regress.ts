@@ -16,6 +16,7 @@ type Scene = {
   seed?: number; coverage?: number; palette?: string; direction?: string; gradient?: number; plane?: boolean;
   words?: string[]; pause?: number; symbol?: string; heart?: boolean; size?: number; density?: number;
   form?: number; hold?: number; fade?: number; holdForever?: boolean; releaseAt?: number;
+  shapeX?: number; also?: [string, number][];   // more symbols at once (symbol, x), each with its own id
 };
 
 const SCENES: Scene[] = [
@@ -40,6 +41,9 @@ const SCENES: Scene[] = [
   { name: 'release5', seconds: 5, heart: true, releaseAt: 3 },
   { name: 'forever24', seconds: 24, words: ['hello'], holdForever: true, releaseAt: 20 },
   { name: 'phone9', seconds: 9, width: 780, height: 1688, words: ['hello'] },
+  { name: 'two9', seconds: 9, symbol: 'heart', shapeX: 0.25, also: [['star', 0.72]] },
+  { name: 'three14', seconds: 14, symbol: 'sun', shapeX: 0.5, also: [['heart', 0.2], ['moon', 0.8]] },
+  { name: 'twomorph12', seconds: 12.4, words: ['hi', 'yo'], pause: 0, also: [['star', 0.75]] },
 ];
 
 const root = resolve(import.meta.dir, '..');
@@ -72,7 +76,8 @@ for (const s of SCENES) {
   opt('--form', s.form); opt('--hold', s.hold); opt('--fade', s.fade);
   if (s.heart) f.push('--heart');
   if (s.holdForever) f.push('--hold-forever');
-  opt('--release-at', s.releaseAt);
+  opt('--release-at', s.releaseAt); opt('--shape-x', s.shapeX);
+  for (const [symbol, x] of s.also ?? []) f.push('--also', `${symbol}@${x}`);
   run(skyRender, [...f, '--out', join(outDir, 'swift', s.name + '.png')]);
 }
 

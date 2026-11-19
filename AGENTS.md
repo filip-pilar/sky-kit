@@ -20,7 +20,8 @@ Change both ports together, with matching comments. Functions shared by name (`f
 
 - No runtime dependencies and no build step: `web/src` is what gets published.
 - Comments say why, in plain words; no commented-out code, no notes about past versions.
-- The web shape worker is built from the source of the functions in `WORKER_FNS` (`sky.js`): anything `maskChannels` or `pickCloud` calls must be listed there. `bun run regress` fails if the worker errors (otherwise the main-thread fallback would hide it).
+- The web shape worker is built from the source of the functions in `WORKER_FNS` (`sky.js`): anything `maskChannels` or `pickCloud` calls must be listed there.
+- Shapes run in up to 3 lanes (`MAX_LANES` / `maxLanes`), each a slot of the cloud shader (`withShape` per slot, `withShapes` over them; in Metal, explicit `ShapeSlot` fields, no arrays, mirrored by the Swift struct). With one shape the slot math must stay exactly the old single-shape math, so existing renders don't change. `bun run regress` fails if the worker errors (otherwise the main-thread fallback would hide it).
 - When behaviour changes, update `README.md` and `docs/ARCHITECTURE.md` too.
 - For visual changes, look at the renders, not only the numbers: motion and morphs need several frames.
 - To measure GPU cost, time Metal command buffers (`gpuEndTime - gpuStartTime`) around `SkyRenderer.update` and `draw` from a scratch Swift package; it does the same work as the web version. Browser timer queries are not reliable on ANGLE's Metal backend.

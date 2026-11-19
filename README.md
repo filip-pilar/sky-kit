@@ -1,6 +1,6 @@
 # sky-kit
 
-Endless drifting painterly clouds on a bright blue sky, for the web (WebGL2, plain JS or React) and Apple platforms (Metal, SwiftUI). A real cloud can turn into a word, emoji or symbol, hold it, and melt back into itself. The web and Swift ports render the same image (mean difference about 0.13/255 per pixel).
+Endless drifting painterly clouds on a bright blue sky, for the web (WebGL2, plain JS or React) and Apple platforms (Metal, SwiftUI). A real cloud can turn into a word, emoji or symbol, hold it, and melt back into itself, up to three at once. The web and Swift ports render the same image (mean difference about 0.13/255 per pixel).
 
 Live demo, with the code for whatever you set: https://claude.ai/artifact/8YKLPNuAnkRtUnAR8u8f2e
 
@@ -11,7 +11,7 @@ Live demo, with the code for whatever you set: https://claude.ai/artifact/8YKLPN
 - **Web:** one ES module, `web/src/sky.js`. No dependencies, no build step. The API's source of truth is `web/src/sky.d.ts`. The React wrapper is `web/src/react.js`, typed in `react.d.ts`.
 - **Swift:** a SwiftPM package at the repo root, library `SkyKit`, iOS 16+ and macOS 13+.
 - **npm:** not published. Use jsDelivr or copy the file. `npm install github:filip-pilar/sky-kit` does not work: the repo root is a private workspace, not the library.
-- **Version:** the latest tag is `v0.2.0`. Licence: MIT.
+- **Version:** the latest tag is `v0.3.0`. Licence: MIT.
 - **Cost:** a plain sky is about 0.6 ms of GPU per frame at iPhone resolution on an M4, 1 ms at 2880×1800. A shape on screen adds about 2–3 ms per repaint at iPhone resolution, 5–7 ms at 2880×1800.
 - **When it draws:**
   - It draws 30 fps unless something moves more than about a point a frame (then up to `fps`, default 60).
@@ -24,7 +24,7 @@ Live demo, with the code for whatever you set: https://claude.ai/artifact/8YKLPN
 **Web, from GitHub through jsDelivr** (pin the tag):
 
 ```js
-import { createSky } from 'https://cdn.jsdelivr.net/gh/filip-pilar/sky-kit@v0.2.0/web/src/sky.js';
+import { createSky } from 'https://cdn.jsdelivr.net/gh/filip-pilar/sky-kit@v0.3.0/web/src/sky.js';
 ```
 
 **Web, copied into your project:** copy `web/src/sky.js` and, for TypeScript, `web/src/sky.d.ts`. For React, also copy `web/src/react.js` and `react.d.ts`; it imports `./sky.js` from the same folder.
@@ -32,7 +32,7 @@ import { createSky } from 'https://cdn.jsdelivr.net/gh/filip-pilar/sky-kit@v0.2.
 **Swift**, in `Package.swift` or with Xcode › File › Add Package Dependencies:
 
 ```swift
-.package(url: "https://github.com/filip-pilar/sky-kit", from: "0.2.0")   // product: "SkyKit"
+.package(url: "https://github.com/filip-pilar/sky-kit", from: "0.3.0")   // product: "SkyKit"
 ```
 
 ## Web
@@ -42,7 +42,7 @@ import { createSky } from 'https://cdn.jsdelivr.net/gh/filip-pilar/sky-kit@v0.2.
   <h1>Content placed here sits on top of the sky</h1>
 </div>
 <script type="module">
-  import { createSky } from 'https://cdn.jsdelivr.net/gh/filip-pilar/sky-kit@v0.2.0/web/src/sky.js';
+  import { createSky } from 'https://cdn.jsdelivr.net/gh/filip-pilar/sky-kit@v0.3.0/web/src/sky.js';
 
   const sky = createSky(document.querySelector('#hero'), { coverage: 0.6, planes: true });
   sky.showShape({ text: 'hello' });                           // a nearby cloud turns into "hello", holds, turns back
@@ -81,9 +81,10 @@ import { createSky } from 'https://cdn.jsdelivr.net/gh/filip-pilar/sky-kit@v0.2.
 | `pause()`, `play()` | stop and resume the drift |
 | `flyPlane({ from, to }?)` | sends a plane; points are 0..1 of the view, y = 0 at the bottom; random if omitted |
 | `showShape(shape)` | forms a shape (below); resolves once its image is built |
-| `releaseShape()` | melts the current shape back from wherever it is and drops the queue |
-| `clearShape()` | removes the shape at once, with no melt |
-| `shapeState` | `{ phase, label, next }`; phase is `none`, `waiting`, `forming`, `holding` or `melting` |
+| `releaseShape(id?)` | melts the shape with that id (or all of them) back from wherever it is and drops its queue |
+| `clearShape(id?)` | removes the shape with that id (or all of them) at once, with no melt |
+| `shapeState` | the shape without an id: `{ phase, label, next }`; phase is `none`, `waiting`, `forming`, `holding` or `melting` |
+| `shapeStates` | the same for every id in use: `{ [id]: state }` (`''` is the shape without an id) |
 | `snapshot()` | PNG data URL of the current frame |
 | `info` | diagnostics: frames drawn, context losses, the last GL error, sizes |
 | `destroy()` | removes the canvas and restores the container |
@@ -99,11 +100,13 @@ import { createSky } from 'https://cdn.jsdelivr.net/gh/filip-pilar/sky-kit@v0.2.
 | `density` | `0.5` | 0 = wispy and see-through, 0.5 = like the clouds around, 1 = solid |
 | `queue` | `false` | wait for the current shape to melt, then form on the same cloud |
 | `pause` | `1` | with `queue`: seconds of plain cloud in between; `0` turns the current shape straight into this one |
+| `id` | `''` | shapes with different ids are on screen side by side, each with its own queue and takeover; up to 3 at once |
 
 How shapes behave:
 
 - **Which cloud:** the shape forms on a real cloud near `x, y`. That cloud reshapes into it and back, and stays.
 - **Call order wins:** a newer `showShape` (not queued) replaces an older one still loading its image, and queued ones keep their call order.
+- **Several at once:** give each shape its own `id` (`showShape({ text: 'hi', id: 'left', x: 0.25 })`, `showShape({ symbol: 'star', id: 'right', x: 0.75 })`). Each id behaves like a single shape: its own takeover rules and its own queue. A new shape keeps off the other shapes' clouds and boxes. With 3 ids on screen, a 4th id takes over the one used longest ago.
 - **Calling `showShape` while a shape shows** takes over without a jump:
   - if that shape is holding, it turns into the new one now;
   - if it is still forming, as soon as it has formed;
@@ -131,7 +134,7 @@ function Hero() {
 ```
 
 - **Props** are the options above. Changing a prop updates the sky live, and removing one restores its default.
-- **The ref** exposes `flyPlane`, `showShape`, `releaseShape`, `clearShape`, `shapeState`, `pause`, `play`, `snapshot`, `canvas` and `options`.
+- **The ref** exposes `flyPlane`, `showShape`, `releaseShape`, `clearShape`, `shapeState`, `shapeStates`, `pause`, `play`, `snapshot`, `canvas` and `options`.
 - **Compatibility:** React 17+, StrictMode and SSR (the sky is created in an effect). The wrapper has no JSX of its own.
 
 ## Swift
@@ -153,8 +156,8 @@ struct ContentView: View {
 
 - **`SkyOptions`** has the web option names and defaults. `colors: SkyColors(top:mid:low:)` replaces `skyTop`/`skyMid`/`skyLow`. Its initialiser takes arguments in declaration order. Changing the value passed to `SkyView` updates the sky live.
 - **`SkyController`** has:
-  - `showShape(.text("hi") | .symbol(.star) | .image(cgImage), x:y:size:form:hold:fade:density:queue:pause:)`, with the web defaults; `x`/`y` are optional (given = prefer the cloud there); `hold: .infinity` holds until released;
-  - `releaseShape()`, `clearShape()`, `flyPlane(from:to:)`, `shapeState`, `snapshot(width:height:)` (a `CGImage`).
+  - `showShape(.text("hi") | .symbol(.star) | .image(cgImage), x:y:size:form:hold:fade:density:queue:pause:id:)`, with the web defaults; `x`/`y` are optional (given = prefer the cloud there); `hold: .infinity` holds until released; `id` as on the web;
+  - `releaseShape(id:)`, `clearShape(id:)` (no id = all), `flyPlane(from:to:)`, `shapeState`, `shapeStates`, `snapshot(width:height:)` (a `CGImage`).
 - **When it draws:** the view stops drawing when nothing moves (speed 0 or Reduce Motion) and wakes when something changes.
 - **`SkyRenderer`** is the Metal renderer on its own, for custom views or offscreen use. `renderImage(width:height:seconds:)` returns a `CGImage`. Its own `showShape` builds the mask on the calling thread (tens of ms); `SkyController` builds it in the background.
 - **Command-line tools:**
@@ -164,7 +167,7 @@ struct ContentView: View {
 ## Known limits
 
 - **Web needs WebGL2**, which every current browser has.
-- **One shape at a time.** A new one takes over, or waits with `queue: true`.
+- **At most three shapes at once** (one per `id`). Within an id, a new one takes over, or waits with `queue: true`.
 - **Strict Content-Security-Policy:** where it blocks `blob:` workers (`worker-src`), the web version builds shapes on the main thread, and the sky can stutter for a moment when one starts.
 - **Days of running:** after several days of continuous running at speed 1, the cloud shading could get grainy (float precision of the noise coordinates).
 

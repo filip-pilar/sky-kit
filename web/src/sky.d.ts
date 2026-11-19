@@ -59,6 +59,9 @@ export interface ShapeOptions {
   /** Queued only: seconds the cloud shows between the two shapes. 0 = the current shape's outline turns straight
    * into this one once it has held (word, next word, ...; this one's `form` is how long that takes). Default 1. */
   pause?: number;
+  /** Shapes with different ids are on screen side by side, each with its own queue and takeover; up to 3 at once,
+   * a 4th id takes over the one used longest ago. Default '' (no id). */
+  id?: string;
 }
 
 export interface PlaneOptions {
@@ -78,12 +81,14 @@ export interface Sky {
   flyPlane(options?: PlaneOptions): void;
   /** A real cloud nearby reshapes into the shape, holds it, then reshapes back into itself. Needs speed > 0. */
   showShape(options: ShapeOptions): Promise<void>;
-  /** Remove the shape at once (it vanishes); see releaseShape for the smooth way. */
-  clearShape(): void;
-  /** Melt the shape on screen back into its cloud now, from wherever it is, and drop the queued ones. */
-  releaseShape(): void;
-  /** What the shapes are doing: the phase, the text or symbol on screen, and the ones queued after it. */
+  /** Remove the shape with this id (or every shape) at once (it vanishes); see releaseShape for the smooth way. */
+  clearShape(id?: string): void;
+  /** Melt the shape with this id (or every shape) back into its cloud now, from wherever it is, and drop the queued ones. */
+  releaseShape(id?: string): void;
+  /** What the shape without an id is doing: the phase, the text or symbol on screen, and the ones queued after it. */
   readonly shapeState: ShapeState;
+  /** The same for every id in use ('' is the shape without an id). */
+  readonly shapeStates: Record<string, ShapeState>;
   /** PNG data URL of the current frame, or null before the first frame. */
   snapshot(): string | null;
   destroy(): void;

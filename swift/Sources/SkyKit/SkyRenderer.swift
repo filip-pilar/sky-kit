@@ -44,13 +44,12 @@ public final class SkyRenderer {
 
     // extras
     private struct Plane { var x, y, dx, dy: Double; var age = 0.0 }
-    /// A shape and its live patch: the near clouds over the shape's area, rendered while it is on screen.
+    /// A shape on screen.
     private final class Shape {
         let texture: MTLTexture; let rect: SIMD4<Double>; let t0, form, hold, fade: Double
         let thickness: Double, blend: Double   // blend: width of the patch's blend border (inside the mask's all-zero margin)
-        var patch: MTLTexture?, patchReady = false, patchTime = -Double.infinity
-        var patchRect = SIMD4<Double>(0, 0, 1, 1)           // cloud-space x0, y0, width, height of what the patch holds
-        var patchUV = SIMD2<Double>(1, 1)                   // the part of the texture it fills
+        var box = SIMD4<Double>(0, 0, 0, 0)                 // the silhouette's box (x0, y0, x1, y1): other shapes keep out of it
+        var srcCells: CloudCells?                           // the map of its cloud, which isn't for other shapes
         var density = 0.5                                   // how dense the finished shape is (0.5 = like the clouds around)
         var src: MTLTexture?; var srcRect = SIMD4<Double>(0, 0, 1, 1)   // map of the cloud it is made from (only that cloud gives way)
         var cloudAt = SIMD2<Double>(0, 0)                   // where that cloud is (the next queued shape forms on it)
@@ -65,6 +64,16 @@ public final class SkyRenderer {
         var holdEnd: Double { t0 + form + hold }
         var end: Double { relAt.map { $0 + relDur } ?? t0 + form + hold + fade }
     }
+    /// A map of a cloud: 0…255 per cell, rows bottom-up, cell (0, 0) at origin.
+    private struct CloudCells { let cells: [UInt8]; let gw, gh: Int; let origin: SIMD2<Double>; let step: Double }
+    /// The live patch: the near clouds over all the shapes' areas, rendered while shapes are on screen.
+    private final class Patch {
+        let texture: MTLTexture; var shapes: [ObjectIdentifier] = []; var ready = false, time = -Double.infinity
+        var rect = SIMD4<Double>(0, 0, 1, 1)                // cloud-space x0, y0, width, height of what it holds
+        var uv = SIMD2<Double>(1, 1)                        // the part of the texture it fills
+        var blend = 0.0                                     // the narrowest of the shapes' blend borders
+        init(_ t: MTLTexture) { texture = t }
+    }
     private struct PendingShape {
         let mask: ShapeMask; let x, y, size, form, hold, fade, density: Double; var pause: Double; var label: String?
         var near: SIMD2<Double>? = nil    // form on the cloud there (the previous shape's)
@@ -76,13 +85,17 @@ public final class SkyRenderer {
     private var planes: [Plane] = []
     private var nextPlane = 8.0
     /// A lane holds one shape at a time: the shape on screen, one waiting for the first frame, and the ones queued
-    /// after it (they form once it has melted).
-    private final class Lane { var shape: Shape?; var pending: PendingShape?; var queue: [PendingShape] = [] }
-    private var lanes = [Lane()]
+    /// after it (they form once it has melted). showShape's `id` picks the lane; up to maxLanes shapes are on screen
+    /// at once, each in a slot of the cloud shader.
+    private final class Lane { var id = ""; var used = 0; var shape: Shape?; var pending: PendingShape?; var queue: [PendingShape] = [] }
+    private static let maxLanes = 3
+    private var lanes = [Lane()], laneUse = 0
+    private var patch: Patch?
 
     // GPU parameter blocks (all float4, so Swift and Metal layouts match)
     private struct GPUColors { var top: SIMD4<Float>, mid: SIMD4<Float>, low: SIMD4<Float> }
-    private struct CloudParams { var a, b, c, d, shapeRect: SIMD4<Float>; var sky: GPUColors; var srcRect, e, prevRect: SIMD4<Float> }
+    private struct ShapeSlot { var rect, src, prev, s, m: SIMD4<Float> }
+    private struct CloudParams { var a, b, c, d: SIMD4<Float>; var sky: GPUColors; var s0, s1, s2: ShapeSlot }
     private struct CompositeParams { var a, far, near, patch, patch2: SIMD4<Float>; var sky: GPUColors }
 
     public init(device: MTLDevice? = MTLCreateSystemDefaultDevice(), options: SkyOptions = SkyOptions()) throws {
@@ -197,21 +210,39 @@ public final class SkyRenderer {
         if let r = s.relAt, t >= r { return Self.ease((t - r) / s.relDur) }
         return Self.ease((t - s.t0 - s.form - s.hold) / s.fade)
     }
-    /// The cloud shader's parameters: a layer snapshot, or (with a shape, as it is at `time`) the live patch over it.
-    private func cloudParams(_ def: LayerDef, x0: Double, y0: Double, time: Double, targetHeight: Int, shape: Shape?, upp: Double? = nil) -> CloudParams {
+    /// The shapes to be seen at time t, in lane order (at most maxLanes: one per slot of the cloud shader).
+    private func liveShapes(at t: Double) -> [Shape] {
+        lanes.compactMap(\.shape).filter { shapeAmount($0, at: t) > 0 && shapeMelt($0, at: t) < 1 }
+    }
+    /// The cloud shader's parameters: a layer snapshot, or (with shapes, as they are at `time`) the live patch.
+    private func cloudParams(_ def: LayerDef, x0: Double, y0: Double, time: Double, targetHeight: Int, shapes: [Shape], upp: Double? = nil) -> CloudParams {
         let seed = def.seed + SIMD2(options.seed * 7.31, options.seed * 3.17)
-        let amount = shapeAmount(shape, at: time), melt = shapeMelt(shape, at: time)
+        func slot(_ k: Int) -> ShapeSlot {
+            let shape = k < shapes.count ? shapes[k] : nil
+            let amount = shapeAmount(shape, at: time), melt = shapeMelt(shape, at: time)
+            return ShapeSlot(
+                rect: SIMD4<Float>(shape?.rect ?? SIMD4(0, 0, 1, 1)),
+                src: SIMD4<Float>(shape?.srcRect ?? SIMD4(0, 0, 1, 1)),
+                prev: SIMD4<Float>(shape?.prev?.rect ?? SIMD4(0, 0, 1, 1)),
+                s: SIMD4(Float(amount), Float(melt), Float(shape?.thickness ?? 0), Float(shape?.density ?? 0.5)),
+                // (the previous mask only matters while the morph runs; once formed, only the new one counts)
+                m: SIMD4(amount > 0 && amount < 1 && shape?.prev != nil ? 1 : 0, Float(shape?.prev?.thickness ?? 0), 0, 0))
+        }
         return CloudParams(
             a: SIMD4(Float(x0), Float(y0), Float(upp ?? viewH / Double(cacheH)), Float(viewH)),
             b: SIMD4(Float(time * def.morph), Float(def.scale), Float(options.coverage), Float(options.shadow)),
             c: SIMD4(Float(def.haze), Float(def.farMask), Float(seed.x), Float(seed.y)),
-            d: SIMD4(Float(targetHeight), Float(amount), Float(melt), Float(shape?.thickness ?? 0)),
-            shapeRect: SIMD4<Float>(shape?.rect ?? SIMD4(0, 0, 1, 1)),
-            sky: gpuColors(),
-            srcRect: SIMD4<Float>(shape?.srcRect ?? SIMD4(0, 0, 1, 1)),
-            // (the previous mask only matters while the morph runs; once formed, only the new one counts)
-            e: SIMD4(Float(shape?.density ?? 0.5), amount > 0 && amount < 1 && shape?.prev != nil ? 1 : 0, Float(shape?.prev?.thickness ?? 0), 0),
-            prevRect: SIMD4<Float>(shape?.prev?.rect ?? SIMD4(0, 0, 1, 1)))
+            d: SIMD4(Float(targetHeight), Float(min(shapes.count, Self.maxLanes)), 0, 0),
+            sky: gpuColors(), s0: slot(0), s1: slot(1), s2: slot(2))
+    }
+    /// The shapes' textures, three per slot: mask, cloud map, previous mask.
+    private func bindShapes(_ enc: MTLRenderCommandEncoder, _ shapes: [Shape]) {
+        for k in 0..<Self.maxLanes {
+            let sh = k < shapes.count ? shapes[k] : nil
+            enc.setFragmentTexture(sh?.texture ?? emptyTexture, index: 3 * k)
+            enc.setFragmentTexture(sh?.src ?? emptyTexture, index: 3 * k + 1)
+            enc.setFragmentTexture(sh?.prev?.texture ?? emptyTexture, index: 3 * k + 2)
+        }
     }
     private func paint(_ def: LayerDef, _ s: Snap, strip: Int, _ cb: MTLCommandBuffer) {
         let rp = MTLRenderPassDescriptor()
@@ -224,9 +255,9 @@ public final class SkyRenderer {
             let x = cacheW * strip / def.strips, x2 = cacheW * (strip + 1) / def.strips
             enc.setScissorRect(MTLScissorRect(x: x, y: 0, width: max(1, x2 - x), height: cacheH))
         }
-        var p = cloudParams(def, x0: s.x0, y0: 0, time: s.time, targetHeight: cacheH, shape: nil)
+        var p = cloudParams(def, x0: s.x0, y0: 0, time: s.time, targetHeight: cacheH, shapes: [])
         enc.setFragmentBytes(&p, length: MemoryLayout<CloudParams>.stride, index: 0)
-        enc.setFragmentTexture(emptyTexture, index: 0); enc.setFragmentTexture(emptyTexture, index: 1); enc.setFragmentTexture(emptyTexture, index: 2)
+        bindShapes(enc, [])
         enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
         enc.endEncoding()
     }
@@ -234,14 +265,21 @@ public final class SkyRenderer {
     /// as the snapshots) with the shape folded into the cloud density. Only the on-screen part is drawn.
     /// The patch is placed with the clouds every frame and changes slowly, so it is repainted at most
     /// 30 times per second of sky time.
-    private func paintPatch(_ lane: Lane, _ cb: MTLCommandBuffer) {
-        guard let sh = lane.shape else { return }
-        let amt = shapeAmount(sh, at: simTime), melt = shapeMelt(sh, at: simTime)
-        guard amt > 0, melt < 1, layers.count == 2 else { sh.patchReady = false; return }
-        let every = amt >= 1 && melt <= 0 ? 1.0 / 15 : 1.0 / 30   // 15 while it only holds (see paintPatch in sky.js)
-        if sh.patchReady && simTime - sh.patchTime < every * 0.8 { return }   // (frames come a little early or late)
-        sh.patchReady = false
-        let upp = viewH / Double(cacheH), r = sh.area, fade = sh.blend
+    private func paintPatch(_ cb: MTLCommandBuffer) {
+        let shapes = liveShapes(at: simTime), ids = shapes.map(ObjectIdentifier.init)
+        guard !shapes.isEmpty, layers.count == 2 else { patch?.ready = false; return }
+        let same = patch?.shapes == ids
+        let holding = shapes.allSatisfy { shapeAmount($0, at: simTime) >= 1 && shapeMelt($0, at: simTime) <= 0 }
+        let every = holding ? 1.0 / 15 : 1.0 / 30   // 15 while they only hold (see paintPatch in sky.js)
+        if same, let pt = patch, pt.ready, simTime - pt.time < every * 0.8 { return }   // (frames come a little early or late)
+        if !same { patch = nil }                                                         // (a new set of shapes: a new patch)
+        patch?.ready = false
+        // the shapes' areas together, and the narrowest blend border (each mask is all zero in its own outer margin)
+        let r = shapes.dropFirst().reduce(shapes[0].area) { a, sh in
+            let b = sh.area, lo = SIMD2(min(a.x, b.x), min(a.y, b.y))
+            return SIMD4(lo.x, lo.y, max(a.x + a.z, b.x + b.z) - lo.x, max(a.y + a.w, b.y + b.w) - lo.y)
+        }
+        let upp = viewH / Double(cacheH), fade = shapes.map(\.blend).min() ?? 0
         let scroll = dir * layers[1].def.speed * simTime, vw = Double(width) / unit
         let x0 = max(r.x, scroll - fade), x1 = min(r.x + r.z, scroll + vw + fade)
         let y0 = max(r.y, -fade), y1 = min(r.y + r.w, viewH + fade)
@@ -251,12 +289,13 @@ public final class SkyRenderer {
         // one texture big enough for the largest clip, so a shape sliding off screen doesn't reallocate every frame
         let tw = max(w, min(maxSize, Int(ceil(min(r.z, vw + 2 * fade) / upp)) + 2))
         let th = max(h, min(maxSize, Int(ceil(min(r.w, viewH + 2 * fade) / upp)) + 2))
-        if (sh.patch?.width ?? 0) < tw || (sh.patch?.height ?? 0) < th {
+        if (patch?.texture.width ?? 0) < tw || (patch?.texture.height ?? 0) < th {
             let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: tw, height: th, mipmapped: false)
             d.usage = [.renderTarget, .shaderRead]; d.storageMode = .private
-            sh.patch = device.makeTexture(descriptor: d)
+            patch = device.makeTexture(descriptor: d).map(Patch.init)
         }
-        guard let tex = sh.patch else { return }
+        guard let pt = patch else { return }
+        let tex = pt.texture
         let rp = MTLRenderPassDescriptor()
         rp.colorAttachments[0].texture = tex
         rp.colorAttachments[0].loadAction = .dontCare
@@ -266,20 +305,19 @@ public final class SkyRenderer {
         // Metal's viewport origin is the top-left: draw into the top-left w×h of the texture, with the shader's
         // y flip over the drawn height h (the composite samples it at (u, 1 - v) × patchUV)
         enc.setViewport(MTLViewport(originX: 0, originY: 0, width: Double(w), height: Double(h), znear: 0, zfar: 1))
-        var p = cloudParams(layers[1].def, x0: x0, y0: y0, time: simTime, targetHeight: h, shape: sh)
+        var p = cloudParams(layers[1].def, x0: x0, y0: y0, time: simTime, targetHeight: h, shapes: shapes)
         enc.setFragmentBytes(&p, length: MemoryLayout<CloudParams>.stride, index: 0)
-        enc.setFragmentTexture(sh.texture, index: 0); enc.setFragmentTexture(sh.src ?? emptyTexture, index: 1)
-        enc.setFragmentTexture(sh.prev?.texture ?? emptyTexture, index: 2)
+        bindShapes(enc, shapes)
         enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
         enc.endEncoding()
-        sh.patchRect = SIMD4(x0, y0, Double(w) * upp, Double(h) * upp)
-        sh.patchUV = SIMD2(Double(w) / Double(tex.width), Double(h) / Double(tex.height))
-        sh.patchTime = simTime; sh.patchReady = true
+        pt.rect = SIMD4(x0, y0, Double(w) * upp, Double(h) * upp)
+        pt.uv = SIMD2(Double(w) / Double(tex.width), Double(h) / Double(tex.height))
+        pt.time = simTime; pt.blend = fade; pt.shapes = ids; pt.ready = true
     }
     /// Repaint after a setting change or a resize: the two snapshots on screen now, the next one a strip per frame as
     /// usual (it is finished before it is needed), so the hitch is two thirds of a full repaint.
     private func rebuildAll(_ cb: MTLCommandBuffer) {
-        for l in lanes { l.shape?.patchReady = false }
+        patch?.ready = false
         for l in layers {
             let t0 = l.snaps[0].time
             for (k, s) in l.snaps.enumerated() {
@@ -335,7 +373,7 @@ public final class SkyRenderer {
     public func draw(to target: MTLTexture, commandBuffer cb: MTLCommandBuffer) throws {
         guard layers.count == 2 else { return }
         let pipeline = try compositePipeline(for: target.pixelFormat)
-        for l in lanes { paintPatch(l, cb) }
+        paintPatch(cb)
         let rp = MTLRenderPassDescriptor()
         rp.colorAttachments[0].texture = target
         rp.colorAttachments[0].loadAction = .dontCare
@@ -349,11 +387,10 @@ public final class SkyRenderer {
                          Float(min(1, max(0, (simTime - l.snaps[0].time) / l.def.dt))))
         }
         var patch = SIMD4<Float>(0, 0, 1, 1), patch2 = SIMD4<Float>(0, 0, 0, 0)
-        let shape = lanes[0].shape
-        if let sh = shape, sh.patchReady {
-            let r = sh.patchRect, scroll = dir * layers[1].def.speed * simTime   // view-relative, subtracted in double precision
+        if let pt = self.patch, pt.ready {
+            let r = pt.rect, scroll = dir * layers[1].def.speed * simTime   // view-relative, subtracted in double precision
             patch = SIMD4(Float(r.x - scroll), Float(r.y), Float(r.z), Float(r.w))
-            patch2 = SIMD4(1, Float(sh.blend), Float(sh.patchUV.x), Float(sh.patchUV.y))   // blend inside the mask's all-zero margin
+            patch2 = SIMD4(1, Float(pt.blend), Float(pt.uv.x), Float(pt.uv.y))   // blend inside the masks' all-zero margins
         }
         var p = CompositeParams(
             a: SIMD4(Float(width), Float(height), Float(unit), Float(viewH)),
@@ -364,7 +401,7 @@ public final class SkyRenderer {
         enc.setFragmentBytes(&extra, length: MemoryLayout<SIMD4<Float>>.stride * extra.count, index: 1)
         enc.setFragmentTexture(layers[0].snaps[0].tex, index: 0); enc.setFragmentTexture(layers[0].snaps[1].tex, index: 1)
         enc.setFragmentTexture(layers[1].snaps[0].tex, index: 2); enc.setFragmentTexture(layers[1].snaps[1].tex, index: 3)
-        enc.setFragmentTexture(shape?.patchReady == true ? shape?.patch : emptyTexture, index: 4)
+        enc.setFragmentTexture(self.patch?.ready == true ? self.patch?.texture : emptyTexture, index: 4)
         enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
         enc.endEncoding()
     }
@@ -424,18 +461,19 @@ public final class SkyRenderer {
     /// turns straight into this one after its hold). Needs speed > 0: shapes form as the sky moves on.
     @discardableResult
     public func showShape(_ source: SkyShapeSource, x: Double? = nil, y: Double? = nil, size: Double = 0.32,
-                          form: Double = 5, hold: Double = 5, fade: Double = 7, density: Double = 0.5, queue: Bool = false, pause: Double = 1) -> Bool {
+                          form: Double = 5, hold: Double = 5, fade: Double = 7, density: Double = 0.5, queue: Bool = false, pause: Double = 1,
+                          id: String = "") -> Bool {
         guard let mask = ShapeMask.make(source) else { return false }
-        return show(mask, label: source.label, x: x, y: y, size: size, form: form, hold: hold, fade: fade, density: density, queue: queue, pause: pause)
+        return show(mask, label: source.label, x: x, y: y, size: size, form: form, hold: hold, fade: fade, density: density, queue: queue, pause: pause, id: id)
     }
     /// showShape with the mask already built (SkyController builds it off the main thread).
     @discardableResult
     func show(_ mask: ShapeMask, label: String, x: Double?, y: Double?, size: Double,
-              form: Double, hold: Double, fade: Double, density: Double, queue: Bool, pause: Double) -> Bool {
+              form: Double, hold: Double, fade: Double, density: Double, queue: Bool, pause: Double, id: String = "") -> Bool {
         guard mask.silhouetteArea >= 1 else { return false }   // (a blank text or image: nothing to form)
         var p = PendingShape(mask: mask, x: x ?? 0.5, y: y ?? 0.6, size: size, form: form, hold: hold, fade: fade, density: min(1, max(0, density)), pause: max(0, pause), label: label)
         p.spot = x != nil || y != nil
-        let lane = lanes[0]
+        let lane = laneFor(id)
         if queue && (lane.shape != nil || lane.pending != nil || !lane.queue.isEmpty) { lane.queue.append(p); return true }
         lane.queue.removeAll()
         if layers.count == 2 { takeOver(lane, p) } else { lane.pending = p }
@@ -455,11 +493,25 @@ public final class SkyRenderer {
         }
         placeShape(lane, p)
     }
-    public func clearShape() { for l in lanes { l.shape = nil; l.pending = nil; l.queue.removeAll() } }
+    private func isIdle(_ l: Lane) -> Bool { l.shape == nil && l.pending == nil && l.queue.isEmpty }
+    /// The lane for an id: its own, else a free one, else a new one, else (all maxLanes busy) the one used longest
+    /// ago, whose shape the new one takes over.
+    private func laneFor(_ id: String) -> Lane {
+        let lane: Lane
+        if let l = lanes.first(where: { $0.id == id }) ?? lanes.first(where: isIdle) { lane = l }
+        else if lanes.count < Self.maxLanes { lane = Lane(); lanes.append(lane) }
+        else { lane = lanes.min { $0.used < $1.used }! }
+        lane.id = id
+        laneUse += 1; lane.used = laneUse
+        return lane
+    }
+    private func lanesFor(_ id: String?) -> [Lane] { id.map { id in lanes.filter { $0.id == id } } ?? lanes }
+    /// Remove the shape with this id (or all of them) at once, and the ones queued after it.
+    public func clearShape(id: String? = nil) { for l in lanesFor(id) { l.shape = nil; l.pending = nil; l.queue.removeAll() } }
     /// Melt the shape on screen back into its cloud now, from wherever it is (forming, holding, turning into the
     /// next one), and drop the shapes waiting after it. Unlike clearShape, nothing jumps.
-    public func releaseShape() {
-        for l in lanes {
+    public func releaseShape(id: String? = nil) {
+        for l in lanesFor(id) {
             l.queue.removeAll(); l.pending = nil
             guard let sh = l.shape else { continue }
             let amt = shapeAmount(sh, at: simTime), melt = shapeMelt(sh, at: simTime)
@@ -470,8 +522,13 @@ public final class SkyRenderer {
         }
     }
     /// What the shapes are doing: the phase, the text or symbol on screen, and the ones queued after it.
-    public var shapeState: SkyShapeState {
-        let lane = lanes[0], next = lane.queue.map { $0.label ?? "image" }
+    public var shapeState: SkyShapeState { lanes.first { $0.id == "" }.map(state) ?? .idle }
+    /// The same for every id in use ("" is the shape without an id).
+    public var shapeStates: [String: SkyShapeState] {
+        Dictionary(lanes.filter { !isIdle($0) }.map { ($0.id, state($0)) }, uniquingKeysWith: { a, _ in a })
+    }
+    private func state(_ lane: Lane) -> SkyShapeState {
+        let next = lane.queue.map { $0.label ?? "image" }
         guard let sh = lane.shape else { return SkyShapeState(phase: next.isEmpty && lane.pending == nil ? .none : .waiting, label: nil, next: next) }
         let amt = shapeAmount(sh, at: simTime), melt = shapeMelt(sh, at: simTime)
         let phase: SkyShapeState.Phase = amt <= 0 ? .waiting : melt > 0 ? .melting : amt < 1 ? .forming : .holding
@@ -499,8 +556,13 @@ public final class SkyRenderer {
         let tEnd = t0 + p.form + holdP + p.fade, s0 = dir * near.def.speed * t0, s1 = dir * near.def.speed * tEnd
         let fits = 2 * hw + 0.06 < vw
         let allowed = SIMD4(fits ? scroll + hw + 0.03 : scroll + vw / 2, hh + 0.03, fits ? scroll + vw - hw - 0.03 : scroll + vw / 2, viewH - hh - 0.03)
+        // the other shapes on screen: this one's centre keeps out of their boxes (grown by its own half size), and their
+        // clouds aren't for it
+        let others = lanes.filter { $0 !== lane }.compactMap(\.shape)
+        let avoidBoxes = others.map { SIMD4($0.box.x - hw - 0.03, $0.box.y - hh - 0.03, $0.box.z + hw + 0.03, $0.box.w + hh + 0.03) }
         let found = from != nil ? nil : cloudNear(x: p.near?.x ?? cx, y: p.near?.y ?? cy, need: p.mask.silhouetteArea * k * k, times: [t0, tMid, tEnd],
-                                                  x0: min(s0, s1) - 0.3, x1: max(s0, s1) + vw + 0.3, allowed: allowed, box: SIMD2(hw, hh), same: p.near != nil || p.spot)
+                                                  x0: min(s0, s1) - 0.3, x1: max(s0, s1) + vw + 0.3, allowed: allowed, box: SIMD2(hw, hh), same: p.near != nil || p.spot,
+                                                  avoidBoxes: avoidBoxes, avoidMaps: others.compactMap(\.srcCells))
         if let from { cx = from.rect.x + from.rect.z / 2; cy = from.rect.y + from.rect.w / 2 }   // right where the previous shape is
         else if let found { cx = found.centre.x; cy = found.centre.y }
         if from != nil || found != nil {
@@ -514,14 +576,15 @@ public final class SkyRenderer {
         sh.density = p.density
         sh.label = p.label
         sh.area = rect
+        sh.box = SIMD4(cx - hw, cy - hh, cx + hw, cy + hh)
         if let from {
             // the previous shape's cloud and mask carry over: its outline turns into this one's
-            sh.src = from.src; sh.srcRect = from.srcRect; sh.cloudAt = from.cloudAt
+            sh.src = from.src; sh.srcRect = from.srcRect; sh.srcCells = from.srcCells; sh.cloudAt = from.cloudAt
             sh.prev = (from.texture, from.rect, from.thickness)
             let r = from.rect, lo = SIMD2(min(r.x, rect.x), min(r.y, rect.y))
             sh.area = SIMD4(lo.x, lo.y, max(r.x + r.z, rect.x + rect.z) - lo.x, max(r.y + r.w, rect.y + rect.w) - lo.y)
         } else {
-            sh.src = found?.src; sh.srcRect = found?.srcRect ?? SIMD4(0, 0, 1, 1)
+            sh.src = found?.src; sh.srcRect = found?.srcRect ?? SIMD4(0, 0, 1, 1); sh.srcCells = found?.cells
             sh.cloudAt = found?.centre ?? SIMD2(cx, cy)
         }
         lane.shape = sh
@@ -530,8 +593,11 @@ public final class SkyRenderer {
     /// The cloud to put a shape on (findCloud), from a map of the near clouds over x0…x1 (all that is on screen
     /// while the shape lives) at the moment it starts forming, times[0]; its centre, and a map of that cloud grown
     /// a little into where it reaches later on (sourceCells), so only that cloud gives way (srcRect: cloud-space x0, y0, w, h).
-    private func cloudNear(x: Double, y: Double, need: Double, times: [Double], x0: Double, x1: Double, allowed: SIMD4<Double>, box: SIMD2<Double>, same: Bool)
-        -> (centre: SIMD2<Double>, src: MTLTexture, srcRect: SIMD4<Double>)? {
+    /// avoidBoxes, avoidMaps: other shapes on screen (as pickCloud in sky.js): boxes (x0, y0, x1, y1) the centre keeps out
+    /// of, and their clouds, which aren't for this one.
+    private func cloudNear(x: Double, y: Double, need: Double, times: [Double], x0: Double, x1: Double, allowed: SIMD4<Double>, box: SIMD2<Double>, same: Bool,
+                           avoidBoxes: [SIMD4<Double>] = [], avoidMaps: [CloudCells] = [])
+        -> (centre: SIMD2<Double>, src: MTLTexture, srcRect: SIMD4<Double>, cells: CloudCells)? {
         let step = 0.02, y0 = -0.02
         let gw = min(400, Int(ceil((x1 - x0) / step))), gh = Int(ceil((viewH + 0.04) / step))
         guard gh > 4, layers.count == 2,
@@ -545,9 +611,9 @@ public final class SkyRenderer {
             rp.colorAttachments[0].texture = tex; rp.colorAttachments[0].loadAction = .dontCare; rp.colorAttachments[0].storeAction = .store
             guard let enc = cb.makeRenderCommandEncoder(descriptor: rp) else { return nil }
             enc.setRenderPipelineState(cloudPipeline)
-            var p = cloudParams(layers[1].def, x0: x0, y0: y0, time: t, targetHeight: gh, shape: nil, upp: step)
+            var p = cloudParams(layers[1].def, x0: x0, y0: y0, time: t, targetHeight: gh, shapes: [], upp: step)
             enc.setFragmentBytes(&p, length: MemoryLayout<CloudParams>.stride, index: 0)
-            enc.setFragmentTexture(emptyTexture, index: 0); enc.setFragmentTexture(emptyTexture, index: 1); enc.setFragmentTexture(emptyTexture, index: 2)
+            bindShapes(enc, [])
             enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
             enc.endEncoding()
             guard let blit = cb.makeBlitCommandEncoder() else { return nil }
@@ -563,6 +629,17 @@ public final class SkyRenderer {
             if i == 0 { grid[yy * gw + xx] = a }
             later[yy * gw + xx] = max(later[yy * gw + xx], a)
         } } }
+        if !avoidBoxes.isEmpty || !avoidMaps.isEmpty {
+            for j in 0..<gh { for i in 0..<gw {
+                let px = x0 + (Double(i) + 0.5) * step, py = y0 + (Double(j) + 0.5) * step
+                var off = avoidBoxes.contains { px > $0.x && px < $0.z && py > $0.y && py < $0.w }
+                for m in avoidMaps where !off {
+                    let mi = Int(floor((px - m.origin.x) / m.step)), mj = Int(floor((py - m.origin.y) / m.step))
+                    off = mi >= 0 && mj >= 0 && mi < m.gw && mj < m.gh && m.cells[mj * m.gw + mi] > 0
+                }
+                if off { grid[j * gw + i] = 0; later[j * gw + i] = 0 }
+            } }
+        }
         guard let best = Self.findCloud(grid: grid, gw: gw, gh: gh, origin: SIMD2(x0, y0), step: step, want: SIMD2(x, y), need: need, allowed: allowed, box: box, same: same)
         else { return nil }
         // where the shape will sit (placeShape clamps it the same way)
@@ -575,7 +652,7 @@ public final class SkyRenderer {
         sd.usage = [.shaderRead]
         guard let src = device.makeTexture(descriptor: sd) else { return nil }
         mask.withUnsafeBytes { src.replace(region: MTLRegionMake2D(0, 0, gw, gh), mipmapLevel: 0, withBytes: $0.baseAddress!, bytesPerRow: gw * 4) }
-        return (centre, src, SIMD4(x0, y0, Double(gw) * step, Double(gh) * step))
+        return (centre, src, SIMD4(x0, y0, Double(gw) * step, Double(gh) * step), CloudCells(cells: mine, gw: gw, gh: gh, origin: SIMD2(x0, y0), step: step))
     }
     /// The map of the cloud a shape is made from (port of sourceCells in sky.js; keep the two identical): its cells
     /// (label == comp), grown up to 4 cells into where any cloud reaches later on (later > 8) but not into other

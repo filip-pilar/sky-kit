@@ -4,10 +4,12 @@ import type { PlaneOptions, ShapeOptions, ShapeState, SkyOptions } from './sky.j
 export interface SkyHandle {
   flyPlane(options?: PlaneOptions): void;
   showShape(options: ShapeOptions): Promise<void> | undefined;
-  clearShape(): void;
-  releaseShape(): void;
+  clearShape(id?: string): void;
+  releaseShape(id?: string): void;
   /** What the shapes are doing (null before mount). */
   readonly shapeState: ShapeState | null;
+  /** The same for every id in use (null before mount). */
+  readonly shapeStates: Record<string, ShapeState> | null;
   pause(): void;
   play(): void;
   snapshot(): string | null;

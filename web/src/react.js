@@ -33,9 +33,10 @@ export const Sky = forwardRef(function Sky({ className, style, children, ...opti
   useImperativeHandle(ref, () => ({
     flyPlane: o => skyRef.current?.flyPlane(o),
     showShape: o => skyRef.current?.showShape(o),
-    clearShape: () => skyRef.current?.clearShape(),
-    releaseShape: () => skyRef.current?.releaseShape(),
+    clearShape: id => skyRef.current?.clearShape(id),
+    releaseShape: id => skyRef.current?.releaseShape(id),
     get shapeState() { return skyRef.current?.shapeState ?? null; },
+    get shapeStates() { return skyRef.current?.shapeStates ?? null; },
     pause: () => skyRef.current?.pause(),
     play: () => skyRef.current?.play(),
     snapshot: () => skyRef.current?.snapshot() ?? null,
